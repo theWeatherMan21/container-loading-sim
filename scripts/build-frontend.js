@@ -74,4 +74,5 @@ function downloadFile(url, dest) {
     copy('vendor');
   }
 
-  console.log(`Frontend
+  console.log(`Frontend copied to ${dist}`);
+})();
