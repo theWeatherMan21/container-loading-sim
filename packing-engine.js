@@ -26,6 +26,8 @@ const PackingEngine = (() => {
     SPATIAL_HASH_CELL_SIZE: 2.0  // 空间哈希网格单元大小（米）
   };
 
+  const SUPPORT_MIN_RATIO = 0.70; // 底面最小支撑覆盖率
+
   // ═══════════════════════════════════════════
   // EMS 空间数据结构
   // ═══════════════════════════════════════════
@@ -262,6 +264,48 @@ const PackingEngine = (() => {
   }
 
   /**
+   * 检查货物底面投影是否与集装箱地板重叠
+   * 用于 40FR 框架柜：叠放货物必须投影到箱体地板上，不能悬空于地板外
+   * @returns {boolean}
+   */
+  function baseOverlapsContainerFloor(x, y, l, w, container) {
+    const fx = 0, fy = 0;
+    const fx2 = container.L, fy2 = container.W;
+    const ox = Math.max(x, fx);
+    const oy = Math.max(y, fy);
+    const ox2 = Math.min(x + l, fx2);
+    const oy2 = Math.min(y + w, fy2);
+    return ox < ox2 - CONSTANTS.EPS && oy < oy2 - CONSTANTS.EPS;
+  }
+
+  /**
+   * 检查货物底面四个角是否都有支撑（防止边角悬空）
+   * @returns {boolean}
+   */
+  function hasCornerSupport(x, y, z, l, w, placedItems) {
+    if (z <= CONSTANTS.EPS) return true;
+    const corners = [
+      [x, y],
+      [x + l, y],
+      [x, y + w],
+      [x + l, y + w]
+    ];
+    for (const [cx, cy] of corners) {
+      let supported = false;
+      for (const p of placedItems) {
+        if (Math.abs(p.z + p.h - z) > CONSTANTS.EPS) continue;
+        if (cx + CONSTANTS.EPS >= p.x && cx - CONSTANTS.EPS <= p.x + p.l &&
+            cy + CONSTANTS.EPS >= p.y && cy - CONSTANTS.EPS <= p.y + p.w) {
+          supported = true;
+          break;
+        }
+      }
+      if (!supported) return false;
+    }
+    return true;
+  }
+
+  /**
    * 寻找最佳放置位置（遍历所有EMS空间和方向）
    * @returns {{spaceIndex, orientation, x, y, z}|null}
    */
@@ -269,7 +313,7 @@ const PackingEngine = (() => {
     let best = null;
     let bestScore = -Infinity;
     const orientations = getOrientations(item);
-    const minSupport = 0.7; // 底面至少需要 70% 支撑，防止悬空
+    const minSupport = SUPPORT_MIN_RATIO;
 
     for (let si = 0; si < emsSpaces.length; si++) {
       const space = emsSpaces[si];
@@ -297,10 +341,18 @@ const PackingEngine = (() => {
         // 叠放检查：如果货物不可叠放，且放在Z>0（即放在其他货物上面），检查下方是否有不可叠放标记
         if (space.z > CONSTANTS.EPS && space.blockedAbove) continue; // M4: 外层已跳过，此行标记为死代码保留
 
-        // 支撑面检查：z>0 时必须满足最低支撑覆盖率
+        // 支撑面检查：z>0 时必须满足最低支撑覆盖率，且四角均有支撑
+        let support = 1;
         if (space.z > CONSTANTS.EPS) {
-          const support = calcSupportRatio(space.x, space.y, space.z, o.l, o.w, placedItems);
-          if (support < minSupport) continue;
+          support = calcSupportRatio(space.x, space.y, space.z, o.l, o.w, placedItems);
+          const cornersOk = hasCornerSupport(space.x, space.y, space.z, o.l, o.w, placedItems);
+
+          // 40FR 框架柜：叠放货物底面必须投影到集装箱地板上
+          const floorOverlap = container.type === 'flatRack'
+            ? baseOverlapsContainerFloor(space.x, space.y, o.l, o.w, container)
+            : true;
+
+          if (support < minSupport || !cornersOk || !floorOverlap) continue;
         }
 
         // 分数
@@ -444,6 +496,19 @@ const PackingEngine = (() => {
 
             // 重量检查
             if (currentWeight + item.weight > container.payload) break;
+
+            // 支撑面检查（层铺时同样不能悬空）
+            if (pz > CONSTANTS.EPS) {
+              const support = calcSupportRatio(px, py, pz, l, w, placedItems);
+              const cornersOk = hasCornerSupport(px, py, pz, l, w, placedItems);
+
+              // 40FR 框架柜：叠放货物底面必须投影到集装箱地板上
+              const floorOverlap = container.type === 'flatRack'
+                ? baseOverlapsContainerFloor(px, py, l, w, container)
+                : true;
+
+              if (support < SUPPORT_MIN_RATIO || !cornersOk || !floorOverlap) continue;
+            }
 
             const entry = {
               model: item.model,

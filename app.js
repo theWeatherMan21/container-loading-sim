@@ -1628,7 +1628,7 @@
   // ═══════════════════════════════════════════
   // PDF Export
   // ═══════════════════════════════════════════
-  function exportPdf() {
+  async function exportPdf() {
     try {
       if (!state.packingResult) {
         showError('没有装箱结果，请先计算 🥛');
@@ -1642,7 +1642,7 @@
         });
       }
 
-      PDFX.generateReport(state.packingResult, state.visualization, state.items);
+      await PDFX.generateReport(state.packingResult, state.visualization);
 
       // 清除一次性处理器，避免影响后续浏览器导出
       if (window.TauriBridge && window.TauriBridge.isTauri) {

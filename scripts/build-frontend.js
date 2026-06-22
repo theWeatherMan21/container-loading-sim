@@ -19,6 +19,19 @@ function copy(src, dest) {
   }
 }
 
+// Ensure vendor/html2canvas.min.js exists (needed for PDF export)
+const html2canvasPath = path.join(root, 'vendor', 'html2canvas.min.js');
+const html2canvasUrl = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+if (!fs.existsSync(html2canvasPath)) {
+  console.log('Downloading html2canvas.min.js...');
+  try {
+    const { execSync } = require('child_process');
+    execSync(`curl -L -o "${html2canvasPath}" "${html2canvasUrl}"`, { stdio: 'inherit' });
+  } catch (e) {
+    console.error('Failed to download html2canvas.min.js. PDF export may not work.', e.message);
+  }
+}
+
 // Clean and recreate dist
 if (fs.existsSync(dist)) {
   fs.rmSync(dist, { recursive: true, force: true });
