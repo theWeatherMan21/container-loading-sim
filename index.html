@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能装箱模拟系统</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="header">
+  <div class="header__inner">
+    <div class="header__brand">
+      <h1 class="header__title">智能装箱<em>模拟系统</em></h1>
+      <p class="header__subtitle">上传装箱单 / 智能解析 / 3D装箱计算 / 导出报告</p>
+    </div>
+    <div class="theme-switcher" role="group" aria-label="主题切换">
+      <button class="theme-btn active" data-theme="light" aria-label="浅色主题" title="浅色主题">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      </button>
+      <button class="theme-btn" data-theme="dark" aria-label="深色主题" title="深色主题">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <button class="theme-btn" data-theme="contrast" aria-label="高对比度主题" title="高对比度主题">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 0 20V2z"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Step Indicators -->
+  <div class="steps" id="step-indicators">
+    <div class="steps__step steps__step--active" data-step="1">
+      <span class="steps__number">1</span><span class="steps__label">上传装箱单</span>
+    </div>
+    <div class="steps__step" data-step="2">
+      <span class="steps__number">2</span><span class="steps__label">确认数据</span>
+    </div>
+    <div class="steps__step" data-step="3">
+      <span class="steps__number">3</span><span class="steps__label">装箱配置</span>
+    </div>
+    <div class="steps__step" data-step="4">
+      <span class="steps__number">4</span><span class="steps__label">装箱结果</span>
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress hidden" id="progress-bar">
+    <div class="progress__bar" style="width:0%"></div>
+  </div>
+  <p class="text-center text-muted hidden" id="progress-text"></p>
+  <p class="text-center hidden" id="calculation-status"></p>
+
+  <!-- ═══ Step 1: Upload ═══ -->
+  <div class="card" id="step-1">
+    <h3 class="card__title">Step 1: 上传装箱单</h3>
+    <div class="drop-zone" id="dropZone">
+      <div class="drop-zone__icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#B8A89A" stroke-width="1.5">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+        </svg>
+      </div>
+      <p class="drop-zone__text">拖拽 <strong>.xlsx / .xls / .csv</strong> 文件到此处</p>
+      <p class="drop-zone__hint">或点击选择文件 · 支持多个 Sheet 自动合并</p>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none">
+    </div>
+  </div>
+
+  <!-- ═══ Step 2: Data Confirmation ═══ -->
+  <div class="card hidden" id="step-2">
+    <h3 class="card__title">Step 2: 确认装箱数据</h3>
+    <div id="parsed-summary"></div>
+
+    <div class="mt-4">
+      <h4 class="card__subtitle">列映射</h4>
+      <div class="table-wrapper">
+        <table class="table" id="column-mapping-table">
+          <thead><tr><th>列</th><th>表头</th><th>映射为</th><th>样本值</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="mt-4" id="multi-size-warnings"></div>
+
+    <div class="mt-4" id="unit-selector"></div>
+
+    <div class="mt-4">
+      <h4 class="card__subtitle">数据预览（前10行）</h4>
+      <div class="table-wrapper" id="data-preview"></div>
+    </div>
+
+    <div class="mt-4 flex justify-between items-center">
+      <button class="btn-secondary" onclick="App.goToStep(1)">← 重新上传</button>
+      <button class="btn-primary" id="btn-confirm-data">确认数据 →</button>
+    </div>
+  </div>
+
+  <!-- ═══ Step 3: Packing Config ═══ -->
+  <div class="card hidden" id="step-3">
+    <h3 class="card__title">Step 3: 装箱配置</h3>
+
+    <div class="flex gap-4 items-center mt-2">
+      <label class="text-muted">操作间隙:</label>
+      <input type="number" id="tolerance-input" value="5" min="0" max="20" step="0.5" style="width:80px">
+      <span class="text-muted">cm</span>
+    </div>
+
+    <div class="mt-4">
+      <h4 class="card__subtitle">货物清单 & 叠放设置</h4>
+      <div class="table-wrapper">
+        <table class="table" id="sku-table">
+          <thead>
+            <tr>
+              <th>型号</th>
+              <th>长(m)</th><th>宽(m)</th><th>高(m)</th>
+              <th>数量</th><th>单重(kg)</th>
+              <th>可叠放</th><th>不可翻转</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="mt-4" id="container-recommendation"></div>
+    <div class="mt-2" id="alternative-containers"></div>
+
+    <div class="mt-4 flex justify-between items-center">
+      <button class="btn-secondary" onclick="App.goToStep(2)">← 返回确认数据</button>
+      <button class="btn-primary" id="btn-calculate">开始计算</button>
+    </div>
+  </div>
+
+  <!-- ═══ Step 4: Results ═══ -->
+  <div class="card hidden" id="step-4">
+    <h3 class="card__title">Step 4: 装箱结果</h3>
+
+    <div class="result-summary" id="result-summary"></div>
+
+    <div class="mt-4">
+      <div class="container-tabs" id="container-tabs"></div>
+    </div>
+
+    <div class="flex gap-4 mt-4" style="flex-wrap:wrap">
+      <div class="viewer-3d" id="three-viewer-container" style="flex:1;min-width:400px">
+        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#B8A89A;">
+          已加载 3D 视图
+        </div>
+      </div>
+
+      <div style="flex:0 0 300px">
+        <div id="container-detail"></div>
+        <div class="mt-4" id="warnings-panel"></div>
+      </div>
+    </div>
+
+    <div class="mt-4 flex justify-between items-center">
+      <button class="btn-secondary" onclick="App.goToStep(3)">← 返回配置</button>
+      <div class="flex gap-2">
+        <button class="btn-secondary" onclick="App.resetState()">重新开始</button>
+        <button class="btn-export" id="btn-export-pdf">导出 PDF 报告</button>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /.container -->
+
+<!-- ═══ Scripts ═══ -->
+<!-- Non-module libraries -->
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/jspdf.umd.min.js"></script>
+
+<!-- Three.js via import map (ES modules) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js",
+    "three/addons/": "./vendor/"
+  }
+}
+</script>
+
+<!-- Application modules (global scripts, load order matters) -->
+<script src="container-db.js"></script>
+<script src="field-parser.js"></script>
+<script src="packing-engine.js"></script>
+<script type="module" src="three-viewer.js"></script>
+<script src="pdf-exporter.js"></script>
+<script src="tauri-plugin-bridge.js"></script>
+<script src="app.js"></script>
+
+</body>
+</html>
