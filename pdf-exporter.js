@@ -41,11 +41,11 @@ const PdfExporter = (() => {
     let detailHtml = '';
     for (let i = 0; i < result.containers.length; i++) {
       const c = result.containers[i];
-      const screenshot = visualization && visualization.getScreenshot ? visualization.getScreenshot(i) : null;
+      const screenshot = visualization && visualization.getScreenshotFixed ? visualization.getScreenshotFixed(i, 800, 600) : null;
       detailHtml += `
         <div style="margin-bottom:32px;page-break-inside:avoid;">
           <h2 style="font-size:18px;margin:0 0 12px;color:#3C3A36;">箱${i + 1}: ${escapeHtml(c.containerCode)} 详细清单</h2>
-          ${screenshot ? `<img src="${screenshot}" style="width:100%;max-height:260px;object-fit:contain;background:#F5F0EB;border-radius:12px;margin-bottom:12px;" />` : ''}
+          ${screenshot ? `<img src="${screenshot}" style="width:auto;height:auto;max-width:100%;max-height:260px;object-fit:contain;background:#F5F0EB;border-radius:12px;margin-bottom:12px;" />` : ''}
           <table style="width:100%;border-collapse:collapse;font-size:12px;">
             <thead>
               <tr style="background:#EDE7E0;">

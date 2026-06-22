@@ -26,3 +26,14 @@ Thumbs.db
 # Test artifacts
 coverage/
 .nyc_output/
+
+# Auto-downloaded vendor
+vendor/html2canvas.min.js
+
+# Debug artifacts
+.dbg/
+debug-*.js
+debug-*.md
+
+# Planning artifacts
+docs/superpowers/plans/

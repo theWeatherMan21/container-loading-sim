@@ -451,6 +451,49 @@ function captureScreenshot(canvasId) {
   return renderer.domElement.toDataURL('image/png');
 }
 
+/**
+ * 固定宽高比截图，避免 PDF 中 3D 视图被拍扁
+ * @param {string} canvasId
+ * @param {number} targetWidth
+ * @param {number} targetHeight
+ */
+function captureScreenshotFixed(canvasId, targetWidth = 800, targetHeight = 600) {
+  const renderer = renderers[canvasId];
+  if (!renderer) return null;
+  const scene = scenes[canvasId];
+  const camera = cameras[canvasId];
+  if (!scene || !camera) return null;
+
+  const originalSize = renderer.getSize(new THREE.Vector2());
+  const originalAspect = camera.aspect;
+
+  renderer.setSize(targetWidth, targetHeight);
+  camera.aspect = targetWidth / targetHeight;
+  camera.updateProjectionMatrix();
+
+  let dataUrl = null;
+  try {
+    renderer.render(scene, camera);
+    dataUrl = renderer.domElement.toDataURL('image/png');
+  } catch (err) {
+    console.warn(`[captureScreenshotFixed] 渲染失败 canvasId=${canvasId}:`, err);
+  }
+
+  // 恢复原始尺寸与相机比例
+  renderer.setSize(originalSize.x, originalSize.y);
+  camera.aspect = originalAspect;
+  camera.updateProjectionMatrix();
+  if (scene && camera) {
+    try {
+      renderer.render(scene, camera);
+    } catch (err) {
+      console.warn(`[captureScreenshotFixed] 恢复渲染失败 canvasId=${canvasId}:`, err);
+    }
+  }
+
+  return dataUrl;
+}
+
 // ── 构建完整可视化 ──
 
 /**
@@ -548,6 +591,12 @@ function buildVisualization(result, parentId) {
     getScreenshot(index) {
       if (allCanvases[index]) {
         return captureScreenshot(allCanvases[index].canvasId);
+      }
+      return null;
+    },
+    getScreenshotFixed(index, width = 800, height = 600) {
+      if (allCanvases[index]) {
+        return captureScreenshotFixed(allCanvases[index].canvasId, width, height);
       }
       return null;
     }
