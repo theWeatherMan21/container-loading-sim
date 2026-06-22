@@ -856,3 +856,126 @@ input[type='checkbox']:hover {
 .items-center { align-items: center; }
 .justify-between { justify-content: space-between; }
 .justify-center { justify-content: center; }
+
+/* ── Manual Cargo Entry ── */
+.manual-entry {
+  margin-top: 24px;
+  padding: 24px;
+  background: var(--bg-secondary);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+}
+
+.manual-entry__title {
+  margin: 0 0 16px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.manual-entry__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.manual-entry__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.manual-entry__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 120px;
+}
+
+.manual-entry__field--small {
+  flex: 0 0 90px;
+}
+
+.manual-entry__field--checkbox {
+  flex: 0 0 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.manual-entry__field span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.manual-entry__field input[type="text"],
+.manual-entry__field input[type="number"] {
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 14px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.manual-entry__field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.manual-entry__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.manual-entry__list {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.manual-entry__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--card);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.manual-entry__item button {
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.manual-entry__item button:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+@media (max-width: 640px) {
+  .manual-entry__row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .manual-entry__field--small,
+  .manual-entry__field--checkbox {
+    flex: 1 1 auto;
+  }
+}

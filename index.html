@@ -66,6 +66,56 @@
       <p class="drop-zone__hint">或点击选择文件 · 支持多个 Sheet 自动合并</p>
       <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none">
     </div>
+
+    <div class="manual-entry" id="manualEntry">
+      <h4 class="manual-entry__title">或手动录入货物</h4>
+      <div class="manual-entry__form">
+        <div class="manual-entry__row">
+          <label class="manual-entry__field">
+            <span>型号</span>
+            <input type="text" id="manual-model" placeholder="如：Radial Beam">
+          </label>
+          <label class="manual-entry__field manual-entry__field--small">
+            <span>数量</span>
+            <input type="number" id="manual-quantity" value="1" min="1" step="1">
+          </label>
+        </div>
+        <div class="manual-entry__row">
+          <label class="manual-entry__field">
+            <span>长 (m)</span>
+            <input type="number" id="manual-length" placeholder="0.00" min="0" step="0.01">
+          </label>
+          <label class="manual-entry__field">
+            <span>宽 (m)</span>
+            <input type="number" id="manual-width" placeholder="0.00" min="0" step="0.01">
+          </label>
+          <label class="manual-entry__field">
+            <span>高 (m)</span>
+            <input type="number" id="manual-height" placeholder="0.00" min="0" step="0.01">
+          </label>
+          <label class="manual-entry__field">
+            <span>或体积 (m³)</span>
+            <input type="number" id="manual-volume" placeholder="0.00" min="0" step="0.001">
+            <small style="color:var(--text-muted);font-size:11px;">仅填体积时按立方体估算尺寸</small>
+          </label>
+        </div>
+        <div class="manual-entry__row">
+          <label class="manual-entry__field">
+            <span>毛重 (kg)</span>
+            <input type="number" id="manual-weight" placeholder="0" min="0" step="0.1">
+          </label>
+          <label class="manual-entry__field manual-entry__field--checkbox">
+            <input type="checkbox" id="manual-stackable" checked>
+            <span>可叠放</span>
+          </label>
+        </div>
+        <div class="manual-entry__actions">
+          <button class="btn-secondary" id="btn-add-manual" type="button">+ 添加货物</button>
+          <button class="btn-primary" id="btn-manual-calc" type="button" disabled>使用以上数据开始计算</button>
+        </div>
+      </div>
+      <div class="manual-entry__list" id="manualList"></div>
+    </div>
   </div>
 
   <!-- ═══ Step 2: Data Confirmation ═══ -->

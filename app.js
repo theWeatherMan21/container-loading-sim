@@ -39,7 +39,9 @@
     multiSizeDecisions: {},   // { model: selectedGroupIndex }
     selectedUnit: 'cm',       // 'mm' | 'cm' | 'm'
     // Step 3 ephemeral state
-    skuOverrides: {}          // { model: { stackable, orientationFixed } }
+    skuOverrides: {},         // { model: { stackable, orientationFixed } }
+    // Manual entry state
+    manualItems: []           // manually entered cargo items
   };
 
   // ═══════════════════════════════════════════
@@ -100,6 +102,12 @@
       }
     }
     updateStepIndicators(step);
+
+    // 回到 Step 1 时刷新手动录入列表
+    if (step === 1) {
+      renderManualList();
+      updateManualCalcButton();
+    }
   }
 
   function updateStepIndicators(activeStep) {
@@ -304,6 +312,175 @@
       const file = e.target.files[0];
       if (file) handleFileUpload(file);
     });
+
+    initManualEntry();
+  }
+
+  // ═══════════════════════════════════════════
+  // Step 1: Manual Cargo Entry
+  // ═══════════════════════════════════════════
+  function initManualEntry() {
+    const btnAdd = $('btn-add-manual');
+    const btnCalc = $('btn-manual-calc');
+    if (!btnAdd || !btnCalc) return;
+
+    btnAdd.addEventListener('click', addManualItem);
+    btnCalc.addEventListener('click', startCalculationFromManual);
+
+    const inputs = ['manual-model', 'manual-length', 'manual-width', 'manual-height', 'manual-volume', 'manual-weight'];
+    inputs.forEach(id => {
+      const el = $(id);
+      if (el) el.addEventListener('input', updateManualCalcButton);
+    });
+
+    renderManualList();
+  }
+
+  function getManualInputs() {
+    const model = ($('manual-model').value || '').trim();
+    const quantity = parseInt($('manual-quantity').value, 10);
+    const l = parseFloat($('manual-length').value);
+    const w = parseFloat($('manual-width').value);
+    const h = parseFloat($('manual-height').value);
+    const volume = parseFloat($('manual-volume').value);
+    const weight = parseFloat($('manual-weight').value);
+    const stackable = $('manual-stackable').checked;
+    return { model, quantity, l, w, h, volume, weight, stackable };
+  }
+
+  function clearManualInputs() {
+    $('manual-model').value = '';
+    $('manual-quantity').value = '1';
+    $('manual-length').value = '';
+    $('manual-width').value = '';
+    $('manual-height').value = '';
+    $('manual-volume').value = '';
+    $('manual-weight').value = '';
+    $('manual-stackable').checked = true;
+    updateManualCalcButton();
+  }
+
+  function validateManualItem(inputs) {
+    const errors = [];
+    if (!inputs.model) errors.push('请填写型号');
+    if (!Number.isFinite(inputs.quantity) || inputs.quantity < 1 || !Number.isInteger(inputs.quantity)) {
+      errors.push('数量必须为正整数');
+    }
+
+    const hasDims = Number.isFinite(inputs.l) && Number.isFinite(inputs.w) && Number.isFinite(inputs.h) &&
+                    inputs.l > 0 && inputs.w > 0 && inputs.h > 0;
+    const hasVolume = Number.isFinite(inputs.volume) && inputs.volume > 0;
+
+    if (!hasDims && !hasVolume) {
+      errors.push('请填写长/宽/高，或填写体积');
+    }
+
+    if (!Number.isFinite(inputs.weight) || inputs.weight < 0) {
+      errors.push('请填写毛重');
+    }
+
+    return errors;
+  }
+
+  function buildManualItem(inputs) {
+    const hasDims = Number.isFinite(inputs.l) && Number.isFinite(inputs.w) && Number.isFinite(inputs.h) &&
+                    inputs.l > 0 && inputs.w > 0 && inputs.h > 0;
+    let l = inputs.l, w = inputs.w, h = inputs.h;
+
+    if (!hasDims && inputs.volume > 0) {
+      // 仅提供体积时，按立方体估算长宽高
+      const side = Math.cbrt(inputs.volume);
+      l = w = h = side;
+    }
+
+    return {
+      model: inputs.model,
+      l,
+      w,
+      h,
+      quantity: inputs.quantity,
+      weight: inputs.weight,
+      stackable: inputs.stackable,
+      orientationFixed: false,
+      volume: l * w * h
+    };
+  }
+
+  function addManualItem() {
+    const inputs = getManualInputs();
+    const errors = validateManualItem(inputs);
+    if (errors.length > 0) {
+      showError(errors.join(' · ') + ' 🥛');
+      return;
+    }
+
+    const item = buildManualItem(inputs);
+    state.manualItems.push(item);
+    renderManualList();
+    clearManualInputs();
+    showSuccess(`已添加 ${item.model} ×${item.quantity} 🥛`);
+  }
+
+  function removeManualItem(index) {
+    state.manualItems.splice(index, 1);
+    renderManualList();
+    updateManualCalcButton();
+  }
+
+  function renderManualList() {
+    const listEl = $('manualList');
+    if (!listEl) return;
+
+    if (state.manualItems.length === 0) {
+      listEl.innerHTML = '';
+      return;
+    }
+
+    let html = '';
+    state.manualItems.forEach((item, idx) => {
+      html += `
+        <div class="manual-entry__item">
+          <span>${escapeHtml(item.model)} ×${item.quantity} · ${item.l.toFixed(2)}×${item.w.toFixed(2)}×${item.h.toFixed(2)} m · ${item.weight.toFixed(1)} kg</span>
+          <button type="button" data-idx="${idx}">删除</button>
+        </div>
+      `;
+    });
+    listEl.innerHTML = html;
+
+    listEl.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', () => removeManualItem(parseInt(btn.dataset.idx, 10)));
+    });
+  }
+
+  function updateManualCalcButton() {
+    const btn = $('btn-manual-calc');
+    if (!btn) return;
+    btn.disabled = state.manualItems.length === 0;
+  }
+
+  function startCalculationFromManual() {
+    if (state.manualItems.length === 0) {
+      showError('请至少添加一件货物 🥛');
+      return;
+    }
+
+    state.fileName = '手动录入';
+    state.fileData = null;
+    state.parsedResult = null;
+    state.dataRows = null;
+    state.items = state.manualItems.map(i => ({ ...i }));
+    state.selectedUnit = 'm';
+
+    state.skuOverrides = {};
+    for (const item of state.items) {
+      state.skuOverrides[item.model] = {
+        stackable: item.stackable !== false,
+        orientationFixed: item.orientationFixed || false
+      };
+    }
+
+    renderStep3();
+    showStep(3);
   }
 
   const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -1720,7 +1897,8 @@
     const reconfigBtn = document.querySelector('#step-3 .btn-reconfig');
     if (reconfigBtn) {
       reconfigBtn.addEventListener('click', () => {
-        showStep(2);
+        // 手动录入没有 Step 2 的解析数据，回到 Step 1 继续编辑
+        showStep(state.parsedResult ? 2 : 1);
       });
     }
 
@@ -1801,6 +1979,7 @@
       state.multiSizeDecisions = {};
       state.selectedUnit = 'cm';
       state.skuOverrides = {};
+      state.manualItems = [];
       state._calculating = false;
       showStep(1);
     }
