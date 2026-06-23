@@ -1,124 +1,133 @@
 /**
- * Three.js 3D 可视化引擎
- * 集装箱渲染 + 货物渲染 + 交互控制
+ * Three.js 3D 可视化引擎 v2
+ * 优化：单 rAF 循环 / 共享 Geometry+Material / 摄像机预设 / ResizeObserver / 大规模标签精简
  * 依赖: importmap 加载 three 和 OrbitControls
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 
-// Morandi 色板（用于货物着色）
+// ═══════════════════════════════════════════
+// 常量
+// ═══════════════════════════════════════════
+
 const MORANDI_COLORS = [
   0xB8A89A, 0x9C8B7D, 0xA8B6B1, 0xD4C5B9, 0xE8DFD5,
   0xC4B5A5, 0x8FA39B, 0xBEAD98, 0xA9AFA9, 0xD9CDBB,
   0xB0AEA3, 0xC7BBB0, 0x99A8A0, 0xCCBFB0, 0xDBD0C2
 ];
 
-// 集装箱颜色
 const CONTAINER_COLORS = {
   standard: 0x6B9080,
   openTop: 0x7B9E8F,
   flatRack: 0x8B7D6B
 };
 
-const SCALE = 1; // Three.js units = meters
+const SCALE = 1;
+const SPRITE_LABEL_THRESHOLD = 50; // 超过此数量只给特殊件打标签
 
-let scenes = {};       // 每个集装箱一个scene
+// 摄像机预设
+const CAMERA_PRESETS = {
+  isometric: { pos: [1, 0.8, 1], target: [0, 0, 0], label: '等距' },
+  top:       { pos: [0, 1, 0.001], target: [0, 0, 0], label: '俯视' },
+  front:     { pos: [0, 0, 1], target: [0, 0, 0], label: '正视' },
+  side:      { pos: [1, 0, 0], target: [0, 0, 0], label: '侧视' }
+};
+
+// ═══════════════════════════════════════════
+// 全局状态
+// ═══════════════════════════════════════════
+
+let scenes = {};
 let renderers = {};
 let cameras = {};
 let controls = {};
-let containers = [];   // 所有集装箱的3D对象
-let currentContainer = 0;
-let animationIds = {}; // 记录每个 canvas 的 rAF ID，用于取消
+let activeCanvasId = null;
+let rAFId = null;
+let parentEl = null;         // 3D 容器 DOM
+let resizeObserver = null;
+let allCanvases = [];
+let geoCache = null;         // { key → { boxGeo, edgeGeo, material, edgeMaterial } }
+let disposed = false;        // 全局 disposed 标记，防止延迟 rAF 继续调度
 
-// ── 初始化 ──
-
-function init(canvasContainerId) {
-  const el = document.getElementById(canvasContainerId);
-  if (!el) return;
-
-  // 清空旧资源
-  disposeAll();
-
-  // 清空
-  el.innerHTML = '';
-  scenes = {};
-  renderers = {};
-  cameras = {};
-  controls = {};
-  containers = [];
-  currentContainer = 0;
-  animationIds = {};
-}
-
-// ── 资源清理 ──
+// ═══════════════════════════════════════════
+// 资源清理
+// ═══════════════════════════════════════════
 
 function disposeAll() {
-  // 取消所有动画循环（防御性遍历，防止 null/undefined ID）
-  for (const id of Object.values(animationIds)) {
-    if (id != null) cancelAnimationFrame(id);
-  }
-  animationIds = {};
+  disposed = true;
+  if (rAFId != null) { cancelAnimationFrame(rAFId); rAFId = null; }
 
-  // 释放所有渲染器（包含 WebGL 上下文）
+  if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
+
   for (const renderer of Object.values(renderers)) {
     renderer.dispose();
     if (renderer.forceContextLoss) renderer.forceContextLoss();
   }
   renderers = {};
 
-  // 清理 OrbitControls
   for (const ctrl of Object.values(controls)) {
     ctrl.dispose();
   }
   controls = {};
 
-  // 清理 Three.js 场景中的几何体和材质
+  // 收集缓存中的共享资源，避免 scene.traverse 重复释放
+  const cachedGeos = new Set();
+  const cachedMats = new Set();
+  if (geoCache) {
+    for (const entry of Object.values(geoCache)) {
+      cachedGeos.add(entry.boxGeo);
+      cachedGeos.add(entry.edgeGeo);
+      cachedMats.add(entry.material);
+      cachedMats.add(entry.edgeMaterial);
+    }
+  }
+
   for (const scene of Object.values(scenes)) {
     scene.traverse((obj) => {
-      if (obj.geometry) obj.geometry.dispose();
+      if (obj.geometry && !cachedGeos.has(obj.geometry)) obj.geometry.dispose();
       if (obj.material) {
         if (Array.isArray(obj.material)) {
-          obj.material.forEach(m => m.dispose());
-        } else {
+          obj.material.forEach(m => { if (!cachedMats.has(m)) m.dispose(); });
+        } else if (!cachedMats.has(obj.material)) {
           obj.material.dispose();
         }
       }
     });
   }
+
+  // 最后释放缓存
+  if (geoCache) {
+    for (const entry of Object.values(geoCache)) {
+      entry.boxGeo.dispose();
+      entry.edgeGeo.dispose();
+      entry.material.dispose();
+      entry.edgeMaterial.dispose();
+    }
+    geoCache = null;
+  }
   scenes = {};
   cameras = {};
+  activeCanvasId = null;
+  allCanvases = [];
+  parentEl = null;
 }
 
-// ── 创建集装箱场景 ──
+// ═══════════════════════════════════════════
+// 初始化
+// ═══════════════════════════════════════════
 
-function createContainerScene(index, containerSpec) {
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xf5f0eb);
-
-  // 光照
-  const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-  scene.add(ambientLight);
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-  dirLight.position.set(10, 15, 10);
-  scene.add(dirLight);
-  const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
-  dirLight2.position.set(-5, 5, -5);
-  scene.add(dirLight2);
-
-  // 集装箱容器组
-  const containerGroup = new THREE.Group();
-  containerGroup.name = 'container';
-  scene.add(containerGroup);
-
-  renderContainerBox(containerGroup, containerSpec);
-
-  scenes[index] = scene;
-  return scene;
+function init(canvasContainerId) {
+  disposeAll();
+  disposed = false;
+  parentEl = document.getElementById(canvasContainerId);
+  if (!parentEl) return;
+  parentEl.innerHTML = '';
 }
 
-/**
- * 验证集装箱规格字段
- */
+// ═══════════════════════════════════════════
+// 集装箱渲染
+// ═══════════════════════════════════════════
+
 function validateContainerSpec(spec) {
   if (!spec) return 'containerSpec 为空';
   const { L, W, H } = spec;
@@ -128,72 +137,75 @@ function validateContainerSpec(spec) {
   return null;
 }
 
-/**
- * 渲染集装箱箱体
- */
+function createContainerScene(index, containerSpec) {
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf5f0eb);
+
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+  scene.add(ambientLight);
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  dirLight.position.set(10, 15, 10);
+  scene.add(dirLight);
+  const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
+  dirLight2.position.set(-5, 5, -5);
+  scene.add(dirLight2);
+
+  const containerGroup = new THREE.Group();
+  containerGroup.name = 'container';
+  scene.add(containerGroup);
+
+  renderContainerBox(containerGroup, containerSpec);
+  scenes[index] = scene;
+  return scene;
+}
+
 function renderContainerBox(group, containerSpec) {
-  const validationError = validateContainerSpec(containerSpec);
-  if (validationError) {
-    throw new Error(`集装箱规格验证失败: ${validationError}`);
-  }
+  const err = validateContainerSpec(containerSpec);
+  if (err) throw new Error(`集装箱规格验证失败: ${err}`);
   const { L, W, H, type } = containerSpec;
   const color = CONTAINER_COLORS[type] || 0x6B9080;
 
-  // 线框
-  const boxGeo = new THREE.BoxGeometry(L * SCALE, H * SCALE, W * SCALE); // Three.js: Y=up
+  const boxGeo = new THREE.BoxGeometry(L * SCALE, H * SCALE, W * SCALE);
   const edges = new THREE.EdgesGeometry(boxGeo);
   const lineMat = new THREE.LineBasicMaterial({ color, linewidth: 1, transparent: true, opacity: 0.6 });
-  const wireframe = new THREE.LineSegments(edges, lineMat);
-  group.add(wireframe);
+  group.add(new THREE.LineSegments(edges, lineMat));
 
-  // 半透明面
   const faceMat = new THREE.MeshPhongMaterial({
     color, transparent: true, opacity: 0.08,
     side: THREE.DoubleSide, depthWrite: false
   });
 
   if (type === 'openTop') {
-    // 开顶柜：不渲染顶面
-    const bottomGeo = new THREE.PlaneGeometry(L * SCALE, W * SCALE);
-    const bottom = new THREE.Mesh(bottomGeo, faceMat);
+    const bottom = new THREE.Mesh(new THREE.PlaneGeometry(L * SCALE, W * SCALE), faceMat);
     bottom.rotation.x = -Math.PI / 2;
     bottom.position.set(0, -H * SCALE / 2, 0);
     group.add(bottom);
-    // 四面墙
     addWalls(group, L, W, H, faceMat, false);
   } else if (type === 'flatRack') {
-    // 框架柜：只有底板 + 两端框架
-    const bottomGeo = new THREE.PlaneGeometry(L * SCALE, W * SCALE);
-    const bottom = new THREE.Mesh(bottomGeo, faceMat);
+    const bottom = new THREE.Mesh(new THREE.PlaneGeometry(L * SCALE, W * SCALE), faceMat);
     bottom.rotation.x = -Math.PI / 2;
     bottom.position.set(0, -H * SCALE / 2, 0);
     group.add(bottom);
-    // 两端立柱
     const pillarGeo = new THREE.BoxGeometry(0.1, H * SCALE, W * SCALE);
     const pillarMat = new THREE.MeshPhongMaterial({ color: 0x8B7355, transparent: true, opacity: 0.4 });
-    const pillar1 = new THREE.Mesh(pillarGeo, pillarMat);
-    pillar1.position.set(-L * SCALE / 2, 0, 0);
-    group.add(pillar1);
-    const pillar2 = new THREE.Mesh(pillarGeo, pillarMat);
-    pillar2.position.set(L * SCALE / 2, 0, 0);
-    group.add(pillar2);
+    const p1 = new THREE.Mesh(pillarGeo, pillarMat);
+    p1.position.set(-L * SCALE / 2, 0, 0);
+    group.add(p1);
+    const p2 = new THREE.Mesh(pillarGeo, pillarMat);
+    p2.position.set(L * SCALE / 2, 0, 0);
+    group.add(p2);
   } else {
-    // 标准柜：完整半透明面
-    const boxMat = new THREE.MeshPhongMaterial({
+    const box = new THREE.Mesh(boxGeo, new THREE.MeshPhongMaterial({
       color, transparent: true, opacity: 0.06,
-      side: THREE.DoubleSide, depthWrite: false,
-      wireframe: false
-    });
-    const box = new THREE.Mesh(boxGeo, boxMat);
+      side: THREE.DoubleSide, depthWrite: false
+    }));
     group.add(box);
   }
 
-  // 地面网格参考
   const gridHelper = new THREE.GridHelper(Math.max(L, W) * 1.5, 20, 0xcccccc, 0xe0e0e0);
   gridHelper.position.y = -H * SCALE / 2 - 0.01;
   group.add(gridHelper);
 
-  // 坐标系指示
   const originMarker = new THREE.Mesh(
     new THREE.SphereGeometry(0.05, 8, 8),
     new THREE.MeshPhongMaterial({ color: 0xff4444 })
@@ -201,38 +213,33 @@ function renderContainerBox(group, containerSpec) {
   originMarker.position.set(-L * SCALE / 2, -H * SCALE / 2, -W * SCALE / 2);
   group.add(originMarker);
 
-  // 门标记 (在 +Z 端，即 THREE 的 Z 正方向 = 箱门)
-  const doorHeight = Math.min(containerSpec.doorH, containerSpec.H);
-  const doorMarkerGeo = new THREE.BoxGeometry(L * SCALE * 0.02, doorHeight * SCALE, containerSpec.doorW * SCALE);
-  const doorMarker = new THREE.Mesh(doorMarkerGeo, new THREE.MeshPhongMaterial({ color: 0xffcc00, transparent: true, opacity: 0.3 }));
+  const doorH = Math.min(containerSpec.doorH !== Infinity ? containerSpec.doorH : H, H);
+  const doorMarker = new THREE.Mesh(
+    new THREE.BoxGeometry(L * SCALE * 0.02, doorH * SCALE, containerSpec.doorW * SCALE),
+    new THREE.MeshPhongMaterial({ color: 0xffcc00, transparent: true, opacity: 0.3 })
+  );
   doorMarker.position.set(L * SCALE / 2, 0, 0);
   group.add(doorMarker);
 }
 
 function addWalls(group, L, W, H, mat, includeTop) {
-  // 底面
   const bottom = new THREE.Mesh(new THREE.PlaneGeometry(L, W), mat);
   bottom.rotation.x = -Math.PI / 2;
   bottom.position.y = -H / 2;
   group.add(bottom);
 
-  // 左墙
   const left = new THREE.Mesh(new THREE.PlaneGeometry(L, H), mat);
   left.position.set(0, 0, -W / 2);
   group.add(left);
 
-  // 右墙
   const right = new THREE.Mesh(new THREE.PlaneGeometry(L, H), mat);
   right.position.set(0, 0, W / 2);
   group.add(right);
 
-  // 前墙
   const front = new THREE.Mesh(new THREE.PlaneGeometry(W, H), mat);
   front.rotation.y = Math.PI / 2;
   front.position.set(-L / 2, 0, 0);
   group.add(front);
-
-  // 后墙（门面）= 不渲染
 
   if (includeTop) {
     const top = new THREE.Mesh(new THREE.PlaneGeometry(L, W), mat);
@@ -242,7 +249,44 @@ function addWalls(group, L, W, H, mat, includeTop) {
   }
 }
 
-// ── 货物渲染 ──
+// ═══════════════════════════════════════════
+// 共享几何体缓存
+// ═══════════════════════════════════════════
+
+function getOrCreateGeo(l, w, h, color) {
+  if (!geoCache) geoCache = {};
+
+  const key = `${l.toFixed(4)}_${w.toFixed(4)}_${h.toFixed(4)}_${color.toString(16)}`;
+  if (geoCache[key]) return geoCache[key];
+
+  const boxGeo = new THREE.BoxGeometry(l * SCALE, h * SCALE, w * SCALE);
+  const edgeGeo = new THREE.EdgesGeometry(boxGeo);
+  const material = new THREE.MeshPhongMaterial({
+    color, transparent: true, opacity: 0.85,
+    specular: 0x222222, shininess: 30
+  });
+  const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.3 });
+
+  const entry = { boxGeo, edgeGeo, material, edgeMaterial };
+  geoCache[key] = entry;
+  return entry;
+}
+
+// ═══════════════════════════════════════════
+// 标签 Sprite
+// ═══════════════════════════════════════════
+
+function roundRect(ctx, x, y, w, h, r) {
+  if (w < 2 * r) r = w / 2;
+  if (h < 2 * r) r = h / 2;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
 
 function createLabelSprite(text, bgColor = 'rgba(255,255,255,0.85)', textColor = '#3C3A36') {
   const canvas = document.createElement('canvas');
@@ -256,12 +300,10 @@ function createLabelSprite(text, bgColor = 'rgba(255,255,255,0.85)', textColor =
   canvas.width = width;
   canvas.height = height;
 
-  // 背景
   ctx.fillStyle = bgColor;
   roundRect(ctx, 0, 0, width, height, 12);
   ctx.fill();
 
-  // 文字
   ctx.fillStyle = textColor;
   ctx.font = `bold ${fontSize}px "SF Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
   ctx.textAlign = 'center';
@@ -276,110 +318,105 @@ function createLabelSprite(text, bgColor = 'rgba(255,255,255,0.85)', textColor =
   return sprite;
 }
 
-function roundRect(ctx, x, y, w, h, r) {
-  if (w < 2 * r) r = w / 2;
-  if (h < 2 * r) r = h / 2;
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
+// ═══════════════════════════════════════════
+// 货物渲染（共享几何体 + 条件标签）
+// ═══════════════════════════════════════════
 
 function renderCargo(group, placedItems, containerSpec) {
   const modelColors = {};
   let colorIdx = 0;
+  const totalCount = placedItems.length;
+  const usePerItemLabel = totalCount <= SPRITE_LABEL_THRESHOLD;
 
   for (const item of placedItems) {
-    if (!modelColors[item.model]) {
-      modelColors[item.model] = MORANDI_COLORS[colorIdx % MORANDI_COLORS.length];
-      colorIdx++;
+    // 优先使用 packing engine 分配的 colorIndex（手动录入时保持录入顺序颜色），
+    // 其次按 model 分组分配
+    let color;
+    if (Number.isFinite(item.colorIndex)) {
+      color = MORANDI_COLORS[item.colorIndex % MORANDI_COLORS.length];
+    } else {
+      if (!modelColors[item.model]) {
+        modelColors[item.model] = MORANDI_COLORS[colorIdx % MORANDI_COLORS.length];
+        colorIdx++;
+      }
+      color = modelColors[item.model];
     }
 
     const { l, w, h, x, y, z, stackable, model } = item;
 
-    // Three.js 坐标系: Y轴向上
+    // Three.js 坐标转换
     const cx = x * SCALE - containerSpec.L * SCALE / 2 + l * SCALE / 2;
     const cy = z * SCALE - containerSpec.H * SCALE / 2 + h * SCALE / 2;
     const cz = y * SCALE - containerSpec.W * SCALE / 2 + w * SCALE / 2;
 
-    const color = modelColors[model];
-
-    // 货物方块
-    const geo = new THREE.BoxGeometry(l * SCALE, h * SCALE, w * SCALE);
-    const mat = new THREE.MeshPhongMaterial({
-      color,
-      transparent: true,
-      opacity: 0.85,
-      specular: 0x222222,
-      shininess: 30
-    });
-    const mesh = new THREE.Mesh(geo, mat);
+    // 共享几何体
+    const shared = getOrCreateGeo(l, w, h, color);
+    const mesh = new THREE.Mesh(shared.boxGeo, shared.material);
     mesh.position.set(cx, cy, cz);
     mesh.userData = { model, l, w, h, stackable, position: `(${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)})` };
     group.add(mesh);
 
-    // 黑色线框边框
-    const edges = new THREE.EdgesGeometry(geo);
-    const edgeLine = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.3 }));
+    // 共享线框
+    const edgeLine = new THREE.LineSegments(shared.edgeGeo, shared.edgeMaterial);
     edgeLine.position.copy(mesh.position);
     group.add(edgeLine);
 
-    // 不可叠放标记：顶部红色半透明面
+    // 不可叠放标记
     if (!stackable) {
       const topGeo = new THREE.PlaneGeometry(l * SCALE, w * SCALE);
-      const topMat = new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
-      const topMesh = new THREE.Mesh(topGeo, topMat);
+      const topMesh = new THREE.Mesh(topGeo,
+        new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.35, side: THREE.DoubleSide }));
       topMesh.rotation.x = -Math.PI / 2;
       topMesh.position.set(cx, cy + h * SCALE / 2 + 0.005, cz);
       group.add(topMesh);
     }
 
-    // 判断是否为旋转放置（放置方向与原始尺寸不一致）
+    // 异常检测
     const origDims = [item.origL, item.origW, item.origH].filter(Boolean);
-    const placedDims = [l, w, h];
     const isRotated = origDims.length === 3 && (
-      origDims[0] !== placedDims[0] || origDims[1] !== placedDims[1] || origDims[2] !== placedDims[2]
+      origDims[0] !== l || origDims[1] !== w || origDims[2] !== h
     );
-
-    // 超长/超宽/超高检测
     const isOverLength = l > containerSpec.L + 0.01;
     const isOverWidth = w > containerSpec.W + 0.01;
     const isOverHeight = h > containerSpec.H + 0.01;
     const isOverSize = isOverLength || isOverWidth || isOverHeight;
+    const isAbnormal = isOverSize || isRotated || !stackable;
 
-    if (isOverSize || isRotated) {
+    if (isAbnormal) {
       const labels = [];
       if (isOverLength) labels.push(`超长${(l - containerSpec.L).toFixed(2)}m`);
       if (isOverWidth) labels.push(`超宽${(w - containerSpec.W).toFixed(2)}m`);
       if (isOverHeight) labels.push(`超高${(h - containerSpec.H).toFixed(2)}m`);
       if (isRotated) labels.push('旋转');
+      if (!stackable) labels.push('禁叠');
 
-      // 红色/橙色虚线框标记
       const markerColor = isOverSize ? 0xff0000 : 0xff8800;
-      const extGeo = new THREE.BoxGeometry(l * SCALE, h * SCALE, w * SCALE);
-      const extEdges = new THREE.EdgesGeometry(extGeo);
-      const extLine = new THREE.LineSegments(extEdges, new THREE.LineBasicMaterial({ color: markerColor, transparent: true, opacity: 0.6 }));
+      const extBox = new THREE.BoxGeometry(l * SCALE, h * SCALE, w * SCALE);
+      const extLine = new THREE.LineSegments(
+        new THREE.EdgesGeometry(extBox),
+        new THREE.LineBasicMaterial({ color: markerColor, transparent: true, opacity: 0.6 })
+      );
       extLine.position.copy(mesh.position);
       group.add(extLine);
 
-      // 标记文字标签
       const markerLabel = createLabelSprite(labels.join(' '), 'rgba(255,255,255,0.9)', isOverSize ? '#C97B7B' : '#B8885A');
       markerLabel.position.set(cx, cy + h * SCALE / 2 + 0.25, cz);
       group.add(markerLabel);
     }
 
-    // 装箱单序号标签
-    const seq = item.id || item.sequence || model;
-    const label = createLabelSprite(String(seq), 'rgba(245,240,235,0.9)', '#3C3A36');
-    label.position.set(cx, cy - h * SCALE / 2 - 0.15, cz);
-    group.add(label);
+    // 序号标签：小规模全打，大规模只给异常件
+    if (usePerItemLabel || isAbnormal) {
+      const seq = item.id || item.sequence || model;
+      const label = createLabelSprite(String(seq), 'rgba(245,240,235,0.9)', '#3C3A36');
+      label.position.set(cx, cy - h * SCALE / 2 - 0.15, cz);
+      group.add(label);
+    }
   }
 }
 
-// ── 相机 & 渲染 ──
+// ═══════════════════════════════════════════
+// 相机 & 渲染器
+// ═══════════════════════════════════════════
 
 function setupCameraRenderer(scene, canvasId, containerSpec) {
   const canvas = document.getElementById(canvasId);
@@ -394,13 +431,12 @@ function setupCameraRenderer(scene, canvasId, containerSpec) {
   renderer.shadowMap.enabled = false;
   renderers[canvasId] = renderer;
 
-  const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-  const maxDim = Math.max(
-    isFinite(containerSpec.L) ? containerSpec.L : 0,
-    isFinite(containerSpec.W) ? containerSpec.W : 0,
-    isFinite(containerSpec.H) ? containerSpec.H : 0
+  const diagonal = Math.sqrt(
+    containerSpec.L * containerSpec.L + containerSpec.W * containerSpec.W + containerSpec.H * containerSpec.H
   );
-  camera.position.set(maxDim * 1.5, maxDim * 1.2, maxDim * 1.5);
+  const dist = diagonal * 0.9;
+  const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, dist * 4);
+  camera.position.set(dist * 0.7, dist * 0.55, dist * 0.7);
   camera.lookAt(0, 0, 0);
   cameras[canvasId] = camera;
 
@@ -414,26 +450,180 @@ function setupCameraRenderer(scene, canvasId, containerSpec) {
   return { renderer, camera };
 }
 
-// ── 动画循环 ──
+// ═══════════════════════════════════════════
+// 单 rAF 循环 — 仅渲染当前活跃场景
+// ═══════════════════════════════════════════
 
-function startAnimation(canvasId) {
+function startAnimation() {
+  if (rAFId != null) return; // 已在运行
+
   function animate() {
-    animationIds[canvasId] = requestAnimationFrame(animate);
-    // L4: 页面不可见时跳过渲染，节省 GPU 资源
+    if (disposed) return;
+    rAFId = requestAnimationFrame(animate);
     if (document.hidden) return;
-    const ctrl = controls[canvasId];
-    const renderer = renderers[canvasId];
-    const camera = cameras[canvasId];
-    const scene = scenes[canvasId];
+    if (!activeCanvasId) return;
+
+    const ctrl = controls[activeCanvasId];
+    const renderer = renderers[activeCanvasId];
+    const camera = cameras[activeCanvasId];
+    const scene = scenes[activeCanvasId];
     if (ctrl && renderer && camera && scene) {
       ctrl.update();
       renderer.render(scene, camera);
     }
   }
-  animationIds[canvasId] = requestAnimationFrame(animate);
+  rAFId = requestAnimationFrame(animate);
 }
 
-// ── 截图 ──
+function stopAnimation() {
+  if (rAFId != null) { cancelAnimationFrame(rAFId); rAFId = null; }
+}
+
+/**
+ * 切换到指定容器索引的 3D 视图
+ */
+function showContainer(index) {
+  const target = allCanvases[index];
+  if (!target) return;
+
+  allCanvases.forEach(c => { c.wrapper.style.display = 'none'; });
+  target.wrapper.style.display = 'block';
+
+  // 切换活跃 scene
+  activeCanvasId = target.canvasId;
+
+  // resize 到最新尺寸
+  const canvas = document.getElementById(target.canvasId);
+  if (canvas) {
+    const renderer = renderers[target.canvasId];
+    const camera = cameras[target.canvasId];
+    if (renderer && camera) {
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      renderer.setSize(w, h);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    }
+  }
+
+  // 确保 rAF 在跑
+  startAnimation();
+}
+
+// ═══════════════════════════════════════════
+// ResizeObserver
+// ═══════════════════════════════════════════
+
+function setupResizeObserver() {
+  if (!parentEl) return;
+  if (resizeObserver) resizeObserver.disconnect();
+
+  resizeObserver = new ResizeObserver(() => {
+    if (!activeCanvasId) return;
+    const canvas = document.getElementById(activeCanvasId);
+    const renderer = renderers[activeCanvasId];
+    const camera = cameras[activeCanvasId];
+    if (!canvas || !renderer || !camera) return;
+
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (w === 0 || h === 0) return;
+
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  });
+
+  resizeObserver.observe(parentEl);
+}
+
+// ═══════════════════════════════════════════
+// 摄像机预设视角（带平滑动画）
+// ═══════════════════════════════════════════
+
+function animateCameraTo(camera, ctrl, targetPos, targetLookAt, duration = 600) {
+  const startPos = camera.position.clone();
+  const startTarget = ctrl.target.clone();
+  const endPos = new THREE.Vector3(...targetPos);
+  const endTarget = new THREE.Vector3(...targetLookAt);
+  const startTime = performance.now();
+
+  function step(now) {
+    const elapsed = now - startTime;
+    const t = Math.min(elapsed / duration, 1.0);
+    // easeInOutCubic
+    const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+    camera.position.lerpVectors(startPos, endPos, ease);
+    ctrl.target.lerpVectors(startTarget, endTarget, ease);
+    ctrl.update();
+
+    if (t < 1) {
+      requestAnimationFrame(step);
+    }
+  }
+  requestAnimationFrame(step);
+}
+
+function applyCameraPreset(presetName) {
+  if (!activeCanvasId) return;
+  const preset = CAMERA_PRESETS[presetName];
+  if (!preset) return;
+
+  const camera = cameras[activeCanvasId];
+  const ctrl = controls[activeCanvasId];
+  if (!camera || !ctrl) return;
+
+  // 基于集装箱尺寸计算实际位置（对角线为基准）
+  const scene = scenes[activeCanvasId];
+  if (!scene) return;
+  const containerGroup = scene.getObjectByName('container');
+  let diagonal = 5; // fallback
+  if (containerGroup && containerGroup.userData && containerGroup.userData.diagonal) {
+    diagonal = containerGroup.userData.diagonal;
+  }
+
+  const dist = diagonal * 0.85;
+  const [rx, ry, rz] = preset.pos;
+  const targetPos = new THREE.Vector3(rx * dist, ry * dist, rz * dist);
+  const targetLookAt = new THREE.Vector3(...preset.target);
+
+  animateCameraTo(camera, ctrl,
+    [targetPos.x, targetPos.y, targetPos.z],
+    [targetLookAt.x, targetLookAt.y, targetLookAt.z]
+  );
+}
+
+/**
+ * 创建预设视角按钮栏
+ */
+function createPresetButtons() {
+  if (!parentEl) return;
+
+  // 移除旧按钮
+  const oldBar = parentEl.querySelector('.three-preset-bar');
+  if (oldBar) oldBar.remove();
+
+  const bar = document.createElement('div');
+  bar.className = 'three-preset-bar';
+  bar.style.cssText = 'position:absolute;bottom:8px;left:50%;transform:translateX(-50%);display:flex;gap:4px;z-index:10;';
+
+  for (const [name, preset] of Object.entries(CAMERA_PRESETS)) {
+    const btn = document.createElement('button');
+    btn.textContent = preset.label;
+    btn.style.cssText = 'padding:4px 10px;border:1px solid #D4C5B9;border-radius:8px;background:rgba(255,255,255,0.75);backdrop-filter:blur(6px);color:#555;font-size:11px;cursor:pointer;transition:all 0.2s;';
+    btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(143,163,155,0.5)'; });
+    btn.addEventListener('mouseleave', () => { btn.style.background = 'rgba(255,255,255,0.75)'; });
+    btn.addEventListener('click', () => applyCameraPreset(name));
+    bar.appendChild(btn);
+  }
+
+  parentEl.appendChild(bar);
+}
+
+// ═══════════════════════════════════════════
+// 截图
+// ═══════════════════════════════════════════
 
 function captureScreenshot(canvasId) {
   const renderer = renderers[canvasId];
@@ -441,22 +631,14 @@ function captureScreenshot(canvasId) {
   const scene = scenes[canvasId];
   const camera = cameras[canvasId];
   if (scene && camera) {
-    try {
-      renderer.render(scene, camera);
-    } catch (err) {
-      console.warn(`[captureScreenshot] 渲染失败 canvasId=${canvasId}:`, err);
+    try { renderer.render(scene, camera); } catch (err) {
+      console.warn(`[captureScreenshot] render fail ${canvasId}:`, err);
       return null;
     }
   }
   return renderer.domElement.toDataURL('image/png');
 }
 
-/**
- * 固定宽高比截图，避免 PDF 中 3D 视图被拍扁
- * @param {string} canvasId
- * @param {number} targetWidth
- * @param {number} targetHeight
- */
 function captureScreenshotFixed(canvasId, targetWidth = 800, targetHeight = 600) {
   const renderer = renderers[canvasId];
   if (!renderer) return null;
@@ -476,51 +658,45 @@ function captureScreenshotFixed(canvasId, targetWidth = 800, targetHeight = 600)
     renderer.render(scene, camera);
     dataUrl = renderer.domElement.toDataURL('image/png');
   } catch (err) {
-    console.warn(`[captureScreenshotFixed] 渲染失败 canvasId=${canvasId}:`, err);
+    console.warn(`[captureScreenshotFixed] render fail ${canvasId}:`, err);
   }
 
-  // 恢复原始尺寸与相机比例
   renderer.setSize(originalSize.x, originalSize.y);
   camera.aspect = originalAspect;
   camera.updateProjectionMatrix();
   if (scene && camera) {
-    try {
-      renderer.render(scene, camera);
-    } catch (err) {
-      console.warn(`[captureScreenshotFixed] 恢复渲染失败 canvasId=${canvasId}:`, err);
-    }
+    try { renderer.render(scene, camera); } catch (err) { /* ignore */ }
   }
-
   return dataUrl;
 }
 
-// ── 构建完整可视化 ──
+// ═══════════════════════════════════════════
+// 构建完整可视化
+// ═══════════════════════════════════════════
 
-/**
- * 为装箱结果创建可视化
- * @param {object} result - PackingEngine.calculate 的返回结果
- * @param {string} parentId - 父容器 DOM ID
- * @returns {object} { containerCount, canvases }
- */
 function buildVisualization(result, parentId) {
   const parent = document.getElementById(parentId);
   if (!parent) return;
 
   if (!result || !result.containers || !Array.isArray(result.containers)) {
-    console.warn('[buildVisualization] result 或 result.containers 无效:', result);
+    console.warn('[buildVisualization] result 无效:', result);
     return;
   }
 
-  // 释放上一次可视化的所有 WebGL 资源
   disposeAll();
-
+  disposed = false;
+  parentEl = parent;
   parent.innerHTML = '';
-
-  const allCanvases = [];
+  geoCache = {};
+  allCanvases = [];
 
   for (let i = 0; i < result.containers.length; i++) {
     const c = result.containers[i];
-    const containerSpec = window.ContainerDB.CONTAINER_DB[c.containerCode];
+    const containerSpec = window.ContainerDB?.CONTAINER_DB?.[c.containerCode];
+    if (!containerSpec) {
+      console.warn(`ThreeViewer: 未知箱型 "${c.containerCode}"，跳过`);
+      continue;
+    }
 
     const wrapper = document.createElement('div');
     wrapper.className = 'three-container';
@@ -536,77 +712,67 @@ function buildVisualization(result, parentId) {
     // 信息标签
     const info = document.createElement('div');
     info.className = 'three-info';
-    info.style.cssText = 'position:absolute;top:8px;left:8px;background:rgba(255,255,255,0.85);padding:4px 10px;border-radius:6px;font-size:11px;color:#666;pointer-events:none;';
-    info.textContent = `箱${i + 1} | ${c.containerCode} | ${(c.utilization * 100).toFixed(1)}% | ${c.totalWeight.toFixed(0)}kg`;
+    const isFR = c.containerCode && c.containerCode.includes('FR');
+    const eff = isFR && c.spaceEfficiency != null
+      ? `${(c.spaceEfficiency * 100).toFixed(1)}%`
+      : `${(c.utilization * 100).toFixed(1)}%`;
+    info.style.cssText = 'position:absolute;top:8px;left:8px;background:rgba(255,255,255,0.85);backdrop-filter:blur(6px);padding:4px 10px;border-radius:6px;font-size:11px;color:#666;pointer-events:none;';
+    info.textContent = `箱${i + 1} | ${c.containerCode} | ${eff} | ${(c.totalWeight || 0).toFixed(0)}kg`;
     wrapper.appendChild(info);
 
     allCanvases.push({ wrapper, canvasId: canvas.id, index: i });
 
-    // 创建场景
-    const container = window.ContainerDB.CONTAINER_DB[c.containerCode];
-    // L3: 空值防护
-    if (!container) {
-      console.warn(`ThreeViewer: 未知集装箱代码 "${c.containerCode}"，跳过`);
-      continue;
-    }
-    const scene = createContainerScene(canvas.id, container);
+    // 场景
+    const scene = createContainerScene(canvas.id, containerSpec);
 
-    // 渲染货物
+    // 存储对角线长度供预设视角使用
+    const diagonal = Math.sqrt(
+      containerSpec.L * containerSpec.L + containerSpec.W * containerSpec.W + containerSpec.H * containerSpec.H
+    );
     const containerGroup = scene.getObjectByName('container');
     if (containerGroup) {
-      renderCargo(containerGroup, c.placedItems, container);
+      containerGroup.userData = { diagonal };
+      renderCargo(containerGroup, c.placedItems, containerSpec);
     }
 
-    // 设置相机和渲染器
-    setupCameraRenderer(scene, canvas.id, container);
-
-    // 启动动画
-    startAnimation(canvas.id);
+    setupCameraRenderer(scene, canvas.id, containerSpec);
   }
 
   // 显示第一个
   if (allCanvases.length > 0) {
+    activeCanvasId = allCanvases[0].canvasId;
     allCanvases[0].wrapper.style.display = 'block';
   }
+
+  // 启动单 rAF + ResizeObserver
+  startAnimation();
+  setupResizeObserver();
+  createPresetButtons();
 
   return {
     containerCount: result.containers.length,
     canvases: allCanvases,
-    showContainer(index) {
-      allCanvases.forEach(c => {
-        c.wrapper.style.display = 'none';
-      });
-      if (allCanvases[index]) {
-        allCanvases[index].wrapper.style.display = 'block';
-        // 触发resize
-        const canvas = document.getElementById(allCanvases[index].canvasId);
-        if (canvas) {
-          const renderer = renderers[allCanvases[index].canvasId];
-          if (renderer) {
-            renderer.setSize(canvas.clientWidth, canvas.clientHeight);
-          }
-        }
-      }
-    },
+    showContainer,
     getScreenshot(index) {
-      if (allCanvases[index]) {
-        return captureScreenshot(allCanvases[index].canvasId);
-      }
+      if (allCanvases[index]) return captureScreenshot(allCanvases[index].canvasId);
       return null;
     },
     getScreenshotFixed(index, width = 800, height = 600) {
-      if (allCanvases[index]) {
-        return captureScreenshotFixed(allCanvases[index].canvasId, width, height);
-      }
+      if (allCanvases[index]) return captureScreenshotFixed(allCanvases[index].canvasId, width, height);
       return null;
     }
   };
 }
 
+// ═══════════════════════════════════════════
+// 导出
+// ═══════════════════════════════════════════
+
 window.ThreeViewer = {
   init,
   buildVisualization,
   captureScreenshot,
+  disposeAll,
   MORANDI_COLORS,
   CONTAINER_COLORS
 };

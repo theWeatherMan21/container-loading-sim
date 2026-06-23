@@ -264,9 +264,13 @@ const PackingEngine = (() => {
   }
 
   /**
-   * 检查货物底面投影是否与集装箱地板重叠
-   * 用于 40FR 框架柜：叠放货物必须投影到箱体地板上，不能悬空于地板外
-   * @returns {boolean}
+   * 检查货物底面投影是否与集装箱地板有交集（用于 40FR/20FR 框架柜）
+   *
+   * 框架柜无侧壁，允许货物宽度/长度超出地板（在 maxOverWidth / maxOverLength 范围内），
+   * 因此只需确保投影与地板存在交集即可，不需完全落入地板内。
+   * 超出地板的程度由 getEffectiveMaxDims 的 FR_REALITY_LIMITS 控制。
+   *
+   * @returns {boolean} 投影与地板有交集则通过
    */
   function baseOverlapsContainerFloor(x, y, l, w, container) {
     const fx = 0, fy = 0;
@@ -338,21 +342,19 @@ const PackingEngine = (() => {
         // 重量检查
         if (currentWeight + item.weight > container.payload) continue;
 
-        // 叠放检查：如果货物不可叠放，且放在Z>0（即放在其他货物上面），检查下方是否有不可叠放标记
-        if (space.z > CONSTANTS.EPS && space.blockedAbove) continue; // M4: 外层已跳过，此行标记为死代码保留
-
         // 支撑面检查：z>0 时必须满足最低支撑覆盖率，且四角均有支撑
         let support = 1;
         if (space.z > CONSTANTS.EPS) {
           support = calcSupportRatio(space.x, space.y, space.z, o.l, o.w, placedItems);
           const cornersOk = hasCornerSupport(space.x, space.y, space.z, o.l, o.w, placedItems);
+          if (support < minSupport || !cornersOk) continue;
+        }
 
-          // 40FR 框架柜：叠放货物底面必须投影到集装箱地板上
-          const floorOverlap = container.type === 'flatRack'
-            ? baseOverlapsContainerFloor(space.x, space.y, o.l, o.w, container)
-            : true;
-
-          if (support < minSupport || !cornersOk || !floorOverlap) continue;
+        // FR 框架柜：任意层（含 z=0）货物底面必须与地板有交集
+        // 因 EMS 空间含超限余量，z=0 时货物也可能被放到地板外，需显式检查
+        if (container.type === 'flatRack') {
+          const floorOverlap = baseOverlapsContainerFloor(space.x, space.y, o.l, o.w, container);
+          if (!floorOverlap) continue;
         }
 
         // 分数
@@ -449,50 +451,54 @@ const PackingEngine = (() => {
     const { l, w, h, quantity } = group;
     const item = group.item;
 
-    // 优先找一块完整的大空间进行层铺
-    // 按面积排序，找最大的可用空间
-    const sortedSpaces = emsSpaces
-      .map((s, i) => ({ ...s, origIndex: i }))
-      .filter(s => !s.blockedAbove || s.z < CONSTANTS.EPS)
-      .sort((a, b) => (b.L * b.W) - (a.L * a.W));
-
     let remaining = quantity;
     const placed = [];
 
-    for (const space of sortedSpaces) {
-      if (remaining <= 0) break;
+    // 门约束检查（只做一次，该组所有货物尺寸相同）
+    const doorCheck = checkDoorConstraint({ l, w, h }, container, tolerance);
+    if (!doorCheck.pass) return { placed, remaining };
 
-      // 在该空间中能铺多少
-      const xCount = Math.floor((space.L + CONSTANTS.EPS) / l);
-      const yCount = Math.floor((space.W + CONSTANTS.EPS) / w);
-      if (xCount === 0 || yCount === 0) continue;
+    const canStackMore = item.stackable !== false;
 
-      // 计算层数
-      const layers = Math.floor((space.H + CONSTANTS.EPS) / h);
-      if (layers === 0) continue;
+    // 使用 while 循环，每次放置后重新计算最佳空间，确保利用新产生的小空间
+    while (remaining > 0) {
+      // 重新按面积排序，找最大的可用空间（此时 emsSpaces 已是最新状态）
+      const sortedSpaces = emsSpaces
+        .map((s, i) => s)
+        .filter(s => !s.blockedAbove || s.z < CONSTANTS.EPS)
+        .sort((a, b) => (b.L * b.W) - (a.L * a.W));
 
-      const perLayer = xCount * yCount;
-      const maxInSpace = Math.min(perLayer * layers, remaining);
+      let bestSpace = null;
+      let bestXCount = 0, bestYCount = 0, bestLayers = 0;
 
-      if (maxInSpace === 0) continue;
+      // 找第一个能放置该货物尺寸的空间
+      for (const s of sortedSpaces) {
+        const xCount = Math.floor((s.L + CONSTANTS.EPS) / l);
+        const yCount = Math.floor((s.W + CONSTANTS.EPS) / w);
+        if (xCount === 0 || yCount === 0) continue;
 
-      // 检查门约束
-      const doorCheck = checkDoorConstraint({ l, w, h }, container, tolerance);
-      if (!doorCheck.pass) continue;
+        const layers = Math.floor((s.H + CONSTANTS.EPS) / h);
+        if (layers === 0) continue;
 
-      // 批量放置
-      let placedCount = 0;
-      const canStackMore = item.stackable !== false;
-      
-      // 如果不可叠放，最多只能放一层（一层放完就封顶，不能再往上放）
-      const maxLayers = canStackMore ? layers : Math.min(layers, 1);
-      
-      for (let layer = 0; layer < maxLayers && placedCount < maxInSpace; layer++) {
-        for (let yi = 0; yi < yCount && placedCount < maxInSpace; yi++) {
-          for (let xi = 0; xi < xCount && placedCount < maxInSpace; xi++) {
-            const px = space.x + xi * l;
-            const py = space.y + yi * w;
-            const pz = space.z + layer * h;
+        bestSpace = s;
+        bestXCount = xCount;
+        bestYCount = yCount;
+        bestLayers = layers;
+        break;
+      }
+
+      if (!bestSpace) break; // 没有空间能放下这组货物
+
+      const maxLayers = canStackMore ? bestLayers : 1;
+      const perLayer = bestXCount * bestYCount;
+      let placedThisRound = 0;
+
+      for (let layer = 0; layer < maxLayers && remaining > 0; layer++) {
+        for (let yi = 0; yi < bestYCount && remaining > 0; yi++) {
+          for (let xi = 0; xi < bestXCount && remaining > 0; xi++) {
+            const px = bestSpace.x + xi * l;
+            const py = bestSpace.y + yi * w;
+            const pz = bestSpace.z + layer * h;
 
             // 重量检查
             if (currentWeight + item.weight > container.payload) break;
@@ -501,13 +507,13 @@ const PackingEngine = (() => {
             if (pz > CONSTANTS.EPS) {
               const support = calcSupportRatio(px, py, pz, l, w, placedItems);
               const cornersOk = hasCornerSupport(px, py, pz, l, w, placedItems);
+              if (support < SUPPORT_MIN_RATIO || !cornersOk) continue;
+            }
 
-              // 40FR 框架柜：叠放货物底面必须投影到集装箱地板上
-              const floorOverlap = container.type === 'flatRack'
-                ? baseOverlapsContainerFloor(px, py, l, w, container)
-                : true;
-
-              if (support < SUPPORT_MIN_RATIO || !cornersOk || !floorOverlap) continue;
+            // FR 框架柜：任意层（含 z=0）货物底面必须与地板有交集
+            if (container.type === 'flatRack') {
+              const floorOverlap = baseOverlapsContainerFloor(px, py, l, w, container);
+              if (!floorOverlap) continue;
             }
 
             const entry = {
@@ -522,27 +528,28 @@ const PackingEngine = (() => {
             placed.push(entry);
             placedItems.push(entry);
             currentWeight += item.weight;
-            placedCount++;
+            placedThisRound++;
+            remaining--;
           }
         }
       }
-      
-      // 如果这组货物不可叠放，放置完一层后标记整个空间上方封顶
-      if (!canStackMore && placedCount > 0) {
+
+      if (placedThisRound === 0) break; // 该空间虽然 fit 但支撑/重量检查全不通过
+
+      // 不可叠放：放置完一层后标记上方空间封顶
+      if (!canStackMore && placedThisRound > 0) {
         for (const s of emsSpaces) {
-          if (s.z >= space.z + h - CONSTANTS.EPS &&
-              s.x < space.x + space.L && s.x + s.L > space.x &&
-              s.y < space.y + space.W && s.y + s.W > space.y) {
+          if (s.z >= bestSpace.z + h - CONSTANTS.EPS &&
+              s.x < bestSpace.x + bestSpace.L && s.x + s.L > bestSpace.x &&
+              s.y < bestSpace.y + bestSpace.W && s.y + s.W > bestSpace.y) {
             s.blockedAbove = true;
           }
         }
       }
 
-      // 更新空间：删除死循环，直接清空并重建（H4 修复）
+      // 更新空间：清空并重建，确保下一轮 while 迭代用最新 EMS
       emsSpaces.length = 0;
       buildEMSFromPlaced(placedItems, container, emsSpaces, tolerance);
-
-      remaining -= placedCount;
     }
 
     return { placed, remaining };
@@ -552,7 +559,9 @@ const PackingEngine = (() => {
    * 从已放置货物重建EMS空间列表
    */
   function buildEMSFromPlaced(placedItems, container, emsSpaces, tolerance) {
-    emsSpaces.push(createSpace(0, 0, 0, container.L, container.W, container.H, false));
+    // 使用与 packSingleContainer 一致的有效尺寸（FR 含现实超限上限）
+    const effDims = getEffectiveMaxDims(container, tolerance);
+    emsSpaces.push(createSpace(0, 0, 0, effDims.maxL, effDims.maxW, effDims.maxH, false));
 
     for (const item of placedItems) {
       // 找到包含该货物的空间并切割
@@ -728,6 +737,7 @@ const PackingEngine = (() => {
 
   function mixedMultiContainerPack(allItems, containerSpecs, options = {}) {
     const containers = [];
+    const skippedContainers = [];  // 记录被跳过的箱型及原因
     let remaining = expandItems(allItems);
     let totalVolumePlaced = 0;
     let totalWeightLoaded = 0;
@@ -735,7 +745,17 @@ const PackingEngine = (() => {
 
     for (let ci = 0; ci < containerSpecs.length; ci++) {
       const spec = containerSpecs[ci];
-      if (remaining.length === 0) break;
+      if (remaining.length === 0) {
+        // 所有货物已在之前的箱型中装完，后续箱型不再需要
+        for (let sj = ci; sj < containerSpecs.length; sj++) {
+          skippedContainers.push({
+            code: containerSpecs[sj].code,
+            nameCN: containerSpecs[sj].nameCN,
+            reason: '所有货物已在之前的箱型中装完，此箱无需使用'
+          });
+        }
+        break;
+      }
 
       const result = packSingleContainer(remaining, spec, options);
       containers.push({
@@ -743,6 +763,17 @@ const PackingEngine = (() => {
         containerCode: spec.code,
         containerName: spec.nameCN
       });
+
+      if (result.placedItems.length === 0) {
+        // 当前箱型无法装下任何货物，标记跳过
+        skippedContainers.push({
+          code: spec.code,
+          nameCN: spec.nameCN,
+          reason: '剩余货物的尺寸/门约束不符合此箱型，无法装载任何货物'
+        });
+        // remaining 不变，继续尝试下一个箱型
+        continue;
+      }
 
       totalPlaced += result.placedItems.length;
       totalVolumePlaced += result.totalVolume;
@@ -758,11 +789,6 @@ const PackingEngine = (() => {
         orientationFixed: false,
         colorIndex: u.colorIndex || 0
       }));
-
-      if (result.placedItems.length === 0 && remaining.length > 0) {
-        // 当前箱型无法装下任何货物，继续尝试下一个
-        continue;
-      }
     }
 
     // 过滤空箱（未装入任何货物的箱型）
@@ -783,7 +809,8 @@ const PackingEngine = (() => {
       avgUtilization,
       totalVolumePlaced,
       totalWeightLoaded,
-      maxPayload: containerSpecs.reduce((s, spec) => s + spec.payload, 0)
+      maxPayload: containerSpecs.reduce((s, spec) => s + spec.payload, 0),
+      skippedContainers
     };
   }
 
@@ -856,6 +883,51 @@ const PackingEngine = (() => {
         type: 'doorViolation',
         message: `${doorViolations.length} 件货物无法通过箱门`,
         details: doorViolations.slice(0, 5)
+      });
+    }
+
+    // 6. FR 底板投影（仅 flatRack）：所有货物底面必须与地板有交集
+    if (isFR) {
+      const floorViolations = [];
+      for (const item of placedItems) {
+        if (!baseOverlapsContainerFloor(item.x, item.y, item.l, item.w, container)) {
+          floorViolations.push(`${item.model} 底面投影未与地板重合 @(${item.x.toFixed(2)},${item.y.toFixed(2)})`);
+        }
+      }
+      if (floorViolations.length > 0) {
+        errors.push({
+          type: 'floorViolation',
+          message: `${floorViolations.length} 件货物底面投影未落在地板上`,
+          details: floorViolations.slice(0, 5)
+        });
+      }
+    }
+
+    // 7. 叠放支撑率 + 四角支撑复检（仅 z>0 的货物）
+    const supportViolations = [];
+    const cornerViolations = [];
+    for (const item of placedItems) {
+      if (item.z <= CONSTANTS.EPS) continue;
+      const ratio = calcSupportRatio(item.x, item.y, item.z, item.l, item.w, placedItems);
+      if (ratio < SUPPORT_MIN_RATIO) {
+        supportViolations.push(`${item.model} 支撑率 ${(ratio * 100).toFixed(1)}% < ${(SUPPORT_MIN_RATIO * 100).toFixed(0)}% @(${item.x.toFixed(2)},${item.y.toFixed(2)},${item.z.toFixed(2)})`);
+      }
+      if (!hasCornerSupport(item.x, item.y, item.z, item.l, item.w, placedItems)) {
+        cornerViolations.push(`${item.model} 四角未完全支撑 @(${item.x.toFixed(2)},${item.y.toFixed(2)},${item.z.toFixed(2)})`);
+      }
+    }
+    if (supportViolations.length > 0) {
+      errors.push({
+        type: 'supportViolation',
+        message: `${supportViolations.length} 处叠放货物支撑率不足`,
+        details: supportViolations.slice(0, 5)
+      });
+    }
+    if (cornerViolations.length > 0) {
+      errors.push({
+        type: 'cornerViolation',
+        message: `${cornerViolations.length} 处叠放货物四角悬空`,
+        details: cornerViolations.slice(0, 5)
       });
     }
 
@@ -1125,7 +1197,7 @@ const PackingEngine = (() => {
     expandItems,
     getTotalQuantity,
     // 暴露内部函数供测试
-    _internal: { createSpace, cutSpace, mergeSpaces, dblScore, emsPlace, layerPack, detectOverlaps, sortItems, groupByModel }
+    _internal: { createSpace, cutSpace, mergeSpaces, dblScore, emsPlace, layerPack, detectOverlaps, sortItems, groupByModel, calcSupportRatio, hasCornerSupport, baseOverlapsContainerFloor }
   };
 })();
 

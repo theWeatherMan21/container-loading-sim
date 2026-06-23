@@ -402,7 +402,8 @@
       weight: inputs.weight,
       stackable: inputs.stackable,
       orientationFixed: false,
-      volume: l * w * h
+      volume: l * w * h,
+      colorIndex: state.manualItems.length      // 按录入顺序分配颜色，3D视图中轮换莫兰迪色板
     };
   }
 
@@ -1154,6 +1155,58 @@
     // 仅当用户主动点击时才按面板选择更新。
   }
 
+  // ── 公共：绑定手动单箱型选择按钮 ──
+  function bindManualContainerButtons(container) {
+    const manualBtns = container.querySelectorAll('.manual-container-btn');
+    if (manualBtns.length === 0) return;
+
+    manualBtns.forEach(btn => {
+      btn.addEventListener('click', function () {
+        const code = this.dataset.code;
+        const spec = CDB.CONTAINER_DB[code];
+        if (!spec) return;
+
+        // 点击任意手动箱型时，强制退出混合模式并选中该箱型
+        if (state.useMixed) {
+          state.useMixed = false;
+          state.containerSpecs = null;
+          const mixedCb = container.querySelector('#use-mixed-checkbox');
+          const mixedPanel = container.querySelector('#mixed-panel');
+          if (mixedCb) mixedCb.checked = false;
+          if (mixedPanel) mixedPanel.style.display = 'none';
+        }
+
+        state.selectedContainerCode = code;
+        state.containerSpec = spec;
+        state.containerSpecs = null;
+        manualBtns.forEach(b => { b.style.background = '#fff'; b.style.color = '#3D3535'; });
+        this.style.background = '#8FA39B';
+        this.style.color = '#fff';
+        const existing = container.querySelector('.manual-selected-info');
+        if (existing) existing.remove();
+        const info = document.createElement('div');
+        info.className = 'manual-selected-info';
+        info.style.cssText = 'margin-top:10px;background:#E8F8F0;border:1px solid #A3D4B0;border-radius:10px;padding:12px;';
+        info.innerHTML = `<div style="font-weight:600;color:#1E7E47;">📦 手动选择：${spec.nameCN}（${spec.code}）</div>
+          <div style="font-size:13px;color:#3D3535;">内尺寸：${spec.L.toFixed(3)}×${spec.W.toFixed(3)}×${spec.H.toFixed(3)} m | 最大载重：${spec.payload} kg</div>
+          <div style="font-size:12px;color:#7A706B;margin-top:4px;">已手动指定箱型，可点击"开始计算"</div>`;
+        container.appendChild(info);
+      });
+      btn.addEventListener('mouseenter', function () {
+        if (state.useMixed) return;
+        if (state.selectedContainerCode !== this.dataset.code) {
+          this.style.background = '#F5F0EB';
+        }
+      });
+      btn.addEventListener('mouseleave', function () {
+        if (state.useMixed) return;
+        if (state.selectedContainerCode !== this.dataset.code) {
+          this.style.background = '#fff';
+        }
+      });
+    });
+  }
+
   // ── 公共：混合复选框 HTML ──
   function getMixedCheckboxHtml() {
     return `<div style="margin-top:12px;border-top:1px solid #E8E0D8;padding-top:10px;">
@@ -1205,51 +1258,17 @@
           manualBtns.forEach(b => { b.style.background = '#fff'; b.style.color = '#3D3535'; });
           state.containerSpec = null;
           state.selectedContainerCode = null;
+          refreshContainerRecommendation();
         } else {
           mixedPanel.style.display = 'none';
           state.containerSpecs = null;
+          // 取消混合时保留手动单箱型按钮，不重刷推荐（避免被重新设为混合）
         }
       });
     }
 
     bindMixedPanelEvents(recEl);
-
-    manualBtns.forEach(btn => {
-      btn.addEventListener('click', function () {
-        if (state.useMixed) return;
-        const code = this.dataset.code;
-        const spec = CDB.CONTAINER_DB[code];
-        if (spec) {
-          state.selectedContainerCode = code;
-          state.containerSpec = spec;
-          state.containerSpecs = null;
-          manualBtns.forEach(b => { b.style.background = '#fff'; b.style.color = '#3D3535'; });
-          this.style.background = '#8FA39B';
-          this.style.color = '#fff';
-          const existing = recEl.querySelector('.manual-selected-info');
-          if (existing) existing.remove();
-          const info = document.createElement('div');
-          info.className = 'manual-selected-info';
-          info.style.cssText = 'margin-top:10px;background:#E8F8F0;border:1px solid #A3D4B0;border-radius:10px;padding:12px;';
-          info.innerHTML = `<div style="font-weight:600;color:#1E7E47;">📦 手动选择：${spec.nameCN}（${spec.code}）</div>
-            <div style="font-size:13px;color:#3D3535;">内尺寸：${spec.L.toFixed(3)}×${spec.W.toFixed(3)}×${spec.H.toFixed(3)} m | 最大载重：${spec.payload} kg</div>
-            <div style="font-size:12px;color:#7A706B;margin-top:4px;">已手动指定箱型，可点击"开始计算"</div>`;
-          recEl.appendChild(info);
-        }
-      });
-      btn.addEventListener('mouseenter', function () {
-        if (state.useMixed) return;
-        if (state.selectedContainerCode !== this.dataset.code) {
-          this.style.background = '#F5F0EB';
-        }
-      });
-      btn.addEventListener('mouseleave', function () {
-        if (state.useMixed) return;
-        if (state.selectedContainerCode !== this.dataset.code) {
-          this.style.background = '#fff';
-        }
-      });
-    });
+    bindManualContainerButtons(recEl);
   }
 
   // ── 分支 C: 自动混合推荐成功 ──
@@ -1274,6 +1293,21 @@
 
     mixedHtml += getMixedCheckboxHtml();
     mixedHtml += renderMixedPanel(mixedRec.specs.map(s => s.code));
+
+    // 同时提供单箱型手动选择入口，点击后退出混合模式
+    mixedHtml += '<div style="margin-top:14px;border-top:1px solid #E8E0D8;padding-top:12px;">';
+    mixedHtml += '<div style="font-weight:600;color:#3D3535;margin-bottom:8px;font-size:13px;">📦 或手动指定单箱型：</div>';
+    mixedHtml += '<div style="display:flex;gap:6px;flex-wrap:wrap;" id="manual-btn-group">';
+    for (const c of CDB.CONTAINER_LIST) {
+      mixedHtml += `<button class="manual-container-btn" data-code="${c.code}"
+        style="margin:4px;padding:8px 14px;border:1px solid #D4C5B9;border-radius:10px;
+               background:#fff;color:#3D3535;cursor:pointer;font-size:13px;
+               transition:all 0.2s ease;">
+        ${c.nameCN} (${c.code})
+      </button>`;
+    }
+    mixedHtml += '</div></div>';
+
     recEl.innerHTML = mixedHtml;
     altEl.innerHTML = '';
 
@@ -1282,9 +1316,21 @@
     if (mixedCb && mixedPanel) {
       mixedCb.checked = true;
       mixedPanel.style.display = 'block';
+      mixedCb.addEventListener('change', function () {
+        state.useMixed = this.checked;
+        if (this.checked) {
+          mixedPanel.style.display = 'block';
+          refreshContainerRecommendation();
+        } else {
+          mixedPanel.style.display = 'none';
+          state.containerSpecs = null;
+          // 取消混合时保留手动单箱型按钮，不重刷推荐（避免被重新设为混合）
+        }
+      });
     }
 
     bindMixedPanelEvents(recEl);
+    bindManualContainerButtons(recEl);
   }
 
   // ── 分支 A: 自动推荐成功 ──
@@ -1392,21 +1438,14 @@
     bindMixedPanelEvents(recEl);
   }
 
-  function renderContainerRecommendation() {
+  function refreshContainerRecommendation() {
     const recEl = $('container-recommendation');
     const altEl = $('alternative-containers');
     if (!recEl || !altEl) return;
 
-    // 仅在首次渲染且无用户选择时重置混合状态
-    const hasUserSelection = state.containerSpec || state.containerSpecs || state.useMixed;
-    if (!hasUserSelection) {
-      state.useMixed = false;
-      state.containerSpecs = null;
-    }
-
     try {
       const recommendation = CDB.autoRecommend(state.items, state.tolerance);
-      console.log('[renderContainerRecommendation] recommendation:', recommendation);
+      console.log('[refreshContainerRecommendation] recommendation:', recommendation);
 
       if (!recommendation || recommendation.type === 'failed') {
         renderFailedRecommendation(recEl, altEl);
@@ -1423,6 +1462,21 @@
       altEl.innerHTML = '';
       ensureCalculateButton();
     }
+  }
+
+  function renderContainerRecommendation() {
+    const recEl = $('container-recommendation');
+    const altEl = $('alternative-containers');
+    if (!recEl || !altEl) return;
+
+    // 仅在首次渲染且无用户选择时重置混合状态
+    const hasUserSelection = state.containerSpec || state.containerSpecs || state.useMixed;
+    if (!hasUserSelection) {
+      state.useMixed = false;
+      state.containerSpecs = null;
+    }
+
+    refreshContainerRecommendation();
   }
 
   // ═══════════════════════════════════════════
@@ -1680,6 +1734,30 @@
 
     if (result.unplacedCount > 0) {
       allWarnings.push(`[未装载] ${result.unplacedCount} 件货物无法装入：${(result.unplacedItems || []).join(', ')}`);
+
+      // 载重提示：单箱型模式下，若剩余货物中存在单件超重，或每箱都已接近载重上限，提示换箱型
+      const spec = state.useMixed ? null : state.containerSpec;
+      if (spec) {
+        const heaviestUnplaced = Math.max(...(result.unplacedItems || []).map(u => {
+          const item = state.items.find(i => i.model === u);
+          return item ? item.weight : 0;
+        }).filter(Boolean), 0);
+        const singleTooHeavy = heaviestUnplaced > spec.payload;
+        const allWeightFull = result.containers.length > 0 &&
+          result.containers.every(c => c.totalWeight >= spec.payload * 0.99);
+        if (singleTooHeavy) {
+          allWarnings.push(`[载重提示] 有未装货物单重 ${heaviestUnplaced.toLocaleString()} kg 超过 ${spec.nameCN} 最大载重 ${spec.payload.toLocaleString()} kg，请改用更大载重箱型。`);
+        } else if (allWeightFull) {
+          allWarnings.push(`[载重提示] 当前 ${spec.nameCN} 载重已达上限（${spec.payload.toLocaleString()} kg），如需装完请改用更大载重箱型或确认已允许多箱装载。`);
+        }
+      }
+    }
+
+    // 混合装箱：提示被跳过的箱型（独立于未装载提示，因可能货物已装完但方案中多余箱型被跳过）
+    if (result.skippedContainers && result.skippedContainers.length > 0) {
+      for (const sc of result.skippedContainers) {
+        allWarnings.push(`[跳过箱型] ${sc.nameCN}（${sc.code}）：${sc.reason}`);
+      }
     }
 
     if (allErrors.length === 0 && allWarnings.length === 0) {

@@ -59,12 +59,12 @@ const CONTAINER_DB = {
   },
   '40FR': {
     code: '40FR', name: '40尺框架柜', nameCN: '40尺框架',
-    L: 11.660, // 内长 11.66m（外长 12.06m），货物实际放置在内长范围内
+    L: 11.700, // 内长 11.70m（外长 12.06m），货物实际放置在内长范围内
     W: 2.370, // BWS: 2.37m
     H: 2.280, // BWS: 2.28m
     doorW: Infinity, doorH: Infinity,
     payload: 39300, // kg (BWS: 39,300 kg)
-    volume: 11.660 * 2.370 * 2.280,
+    volume: 11.700 * 2.370 * 2.280,
     type: 'flatRack',
     allowOverHeight: true, maxOverHeight: 0.5,
     allowOverWidth: true, maxOverWidth: 0.3,
@@ -325,14 +325,14 @@ function validateItem(item, container, currentTotalWeight = 0, tolerance = 0.05)
 
 /**
  * 40FR 超长规则：
- * - 内长 11.66m 为基准；
- * - 若长宽高有 2 项及以上超过 11.66m，明确无法装载；
- * - 若仅 1 项超过 11.66m，允许作为 FR 超长货装载（需 3D 标出）。
+ * - 内长 11.70m 为基准；
+ * - 若长宽高有 2 项及以上超过 11.70m，明确无法装载；
+ * - 若仅 1 项超过 11.70m，允许作为 FR 超长货装载（需 3D 标出）。
  * @param {object} item - {l, w, h}
  * @returns {{frAllowed: boolean, overLength: boolean, rotated: boolean, reason: string}}
  */
 function checkFRLengthRule(item) {
-  const frL = CONTAINER_DB['40FR'].L; // 11.66m
+  const frL = CONTAINER_DB['40FR'].L;
   const dims = [item.l, item.w, item.h];
   const overCount = dims.filter(d => d > frL).length;
 
@@ -341,7 +341,7 @@ function checkFRLengthRule(item) {
   }
 
   if (overCount === 1) {
-    // 仅一项超过 11.66m：只能是长度方向超长，标记为 FR 超长货
+    // 仅一项超过 11.70m：只能是长度方向超长，标记为 FR 超长货
     return { frAllowed: true, overLength: true, rotated: false, reason: `长度 ${Math.max(...dims).toFixed(2)}m 超过 40FR 内长 ${frL}m，作为超长货装载` };
   }
 
@@ -363,33 +363,26 @@ function classifyItemByContainerType(item, tolerance = 0.05) {
   const hasOverLengthDim = item.l > fr40.L || item.w > fr40.L || item.h > fr40.L;
 
   if (!hasOverLengthDim) {
-    // 1. 检查能否通过20GP门（标准柜门约束）
+    // 1. 检查能否通过20GP门并fit有效尺寸（尝试6个旋转方向）
     const gp20Door = checkDoorConstraint(item, gp20, tolerance);
     if (gp20Door.pass) {
-      const gp20Eff = getEffectiveMaxDims(gp20, tolerance);
-      const fit20GP = item.l <= gp20Eff.maxL && item.w <= gp20Eff.maxW && item.h <= gp20Eff.maxH;
-      if (fit20GP) return '20GP';
+      if (fitsByRotation(item, getEffectiveMaxDims(gp20, tolerance))) return '20GP';
     }
 
     // 2. 检查能否通过40HQ门
     const hq40Door = checkDoorConstraint(item, hq40, tolerance);
     if (hq40Door.pass) {
-      const hq40Eff = getEffectiveMaxDims(hq40, tolerance);
-      const fit40HQ = item.l <= hq40Eff.maxL && item.w <= hq40Eff.maxW && item.h <= hq40Eff.maxH;
-      if (fit40HQ) return '40HQ';
+      if (fitsByRotation(item, getEffectiveMaxDims(hq40, tolerance))) return '40HQ';
     }
 
-    // 3. 检查能否通过OT门（仅宽度约束）
+    // 3. 检查能否通过OT门（仅宽度约束）并fit有效尺寸
     const ot20 = CONTAINER_DB['20OT'];
     const ot40 = CONTAINER_DB['40OT'];
     const ot20Door = checkDoorConstraint(item, ot20, tolerance);
     const ot40Door = checkDoorConstraint(item, ot40, tolerance);
     if (ot20Door.pass || ot40Door.pass) {
-      const ot20Eff = getEffectiveMaxDims(ot20, tolerance);
-      const ot40Eff = getEffectiveMaxDims(ot40, tolerance);
-      const fitOT20 = item.l <= ot20Eff.maxL && item.w <= ot20Eff.maxW && item.h <= ot20Eff.maxH;
-      const fitOT40 = item.l <= ot40Eff.maxL && item.w <= ot40Eff.maxW && item.h <= ot40Eff.maxH;
-      if (fitOT20 || fitOT40) return 'OT';
+      if (fitsByRotation(item, getEffectiveMaxDims(ot20, tolerance)) ||
+          fitsByRotation(item, getEffectiveMaxDims(ot40, tolerance))) return 'OT';
     }
   }
 
@@ -397,7 +390,7 @@ function classifyItemByContainerType(item, tolerance = 0.05) {
   const frRule = checkFRLengthRule(item);
 
   if (!frRule.frAllowed) {
-    // 明确无法装载：两项及以上超过 11.66m
+    // 明确无法装载：两项及以上超过 40FR 内长
     return 'none';
   }
 
@@ -499,10 +492,8 @@ function recommendContainer(items, tolerance = 0.05) {
     const ot20Eff = getEffectiveMaxDims(ot20, tolerance);
     const ot40Eff = getEffectiveMaxDims(ot40, tolerance);
 
-    // 优先尝试20OT（更经济）
-    const allFit20OT = items.every(item =>
-      item.l <= ot20Eff.maxL && item.w <= ot20Eff.maxW && item.h <= ot20Eff.maxH
-    );
+    // 优先尝试20OT（更经济），使用6方向旋转检查
+    const allFit20OT = items.every(item => fitsByRotation(item, ot20Eff));
     const weightFit20OT = totalWeight <= ot20.payload;
 
     if (allFit20OT && weightFit20OT) {
@@ -510,9 +501,7 @@ function recommendContainer(items, tolerance = 0.05) {
       alternatives = [ot40];
       reasoning.push('货物高度超限，20OT开顶柜可装载');
     } else {
-      const allFit40OT = items.every(item =>
-        item.l <= ot40Eff.maxL && item.w <= ot40Eff.maxW && item.h <= ot40Eff.maxH
-      );
+      const allFit40OT = items.every(item => fitsByRotation(item, ot40Eff));
       const weightFit40OT = totalWeight <= ot40.payload;
       if (allFit40OT && weightFit40OT) {
         primary = ot40;
@@ -524,10 +513,8 @@ function recommendContainer(items, tolerance = 0.05) {
     }
   } else if (needs40HQ) {
     // 需要40HQ（长度或高度超20GP，但能通过40HQ门）
-    const allFit40HQ = items.every(item => {
-      const eff = getEffectiveMaxDims(hq40, tolerance);
-      return item.l <= eff.maxL && item.w <= eff.maxW && item.h <= eff.maxH;
-    });
+    const hq40Eff = getEffectiveMaxDims(hq40, tolerance);
+    const allFit40HQ = items.every(item => fitsByRotation(item, hq40Eff));
     const weightFit40HQ = totalWeight <= hq40.payload;
 
     if (allFit40HQ && weightFit40HQ) {
@@ -669,59 +656,51 @@ function recommendMixedContainers(items, tolerance = 0.05) {
     const allow = (type) => !allowedTypes || allowedTypes.includes(type);
 
     if (allow('standard')) {
-      // 尝试20GP
+      // 尝试20GP（6方向旋转检查）
       const gp20 = CONTAINER_DB['20GP'];
-      const allFitGP20 = groupItems.every(item => {
-        const eff = getEffectiveMaxDims(gp20, tolerance);
-        return item.l <= eff.maxL && item.w <= eff.maxW && item.h <= eff.maxH;
-      });
-      if (allFitGP20) candidates.push({ spec: gp20, units: calcUnitsForGroup(groupItems, gp20) });
+      const gp20Eff = getEffectiveMaxDims(gp20, tolerance);
+      if (groupItems.every(item => fitsByRotation(item, gp20Eff))) {
+        candidates.push({ spec: gp20, units: calcUnitsForGroup(groupItems, gp20) });
+      }
 
       // 尝试40HQ
       const hq40 = CONTAINER_DB['40HQ'];
-      const allFitHQ40 = groupItems.every(item => {
-        const eff = getEffectiveMaxDims(hq40, tolerance);
-        return item.l <= eff.maxL && item.w <= eff.maxW && item.h <= eff.maxH;
-      });
-      if (allFitHQ40) candidates.push({ spec: hq40, units: calcUnitsForGroup(groupItems, hq40) });
+      const hq40Eff = getEffectiveMaxDims(hq40, tolerance);
+      if (groupItems.every(item => fitsByRotation(item, hq40Eff))) {
+        candidates.push({ spec: hq40, units: calcUnitsForGroup(groupItems, hq40) });
+      }
     }
 
     if (allow('openTop')) {
-      // 尝试20OT
+      // 尝试20OT（6方向旋转检查）
       const ot20 = CONTAINER_DB['20OT'];
-      const allFitOT20 = groupItems.every(item => {
-        const eff = getEffectiveMaxDims(ot20, tolerance);
-        return item.l <= eff.maxL && item.w <= eff.maxW && item.h <= eff.maxH;
-      });
-      if (allFitOT20) candidates.push({ spec: ot20, units: calcUnitsForGroup(groupItems, ot20) });
+      const ot20Eff = getEffectiveMaxDims(ot20, tolerance);
+      if (groupItems.every(item => fitsByRotation(item, ot20Eff))) {
+        candidates.push({ spec: ot20, units: calcUnitsForGroup(groupItems, ot20) });
+      }
 
       // 尝试40OT
       const ot40 = CONTAINER_DB['40OT'];
-      const allFitOT40 = groupItems.every(item => {
-        const eff = getEffectiveMaxDims(ot40, tolerance);
-        return item.l <= eff.maxL && item.w <= eff.maxW && item.h <= eff.maxH;
-      });
-      if (allFitOT40) candidates.push({ spec: ot40, units: calcUnitsForGroup(groupItems, ot40) });
+      const ot40Eff = getEffectiveMaxDims(ot40, tolerance);
+      if (groupItems.every(item => fitsByRotation(item, ot40Eff))) {
+        candidates.push({ spec: ot40, units: calcUnitsForGroup(groupItems, ot40) });
+      }
     }
 
     if (allow('flatRack')) {
-      // 尝试20FR（FR可以超宽超高，只需检查最长边不超过箱长）
+      // 尝试20FR（6方向旋转检查，含超限余量）
       const fr20 = CONTAINER_DB['20FR'];
       const fr20Eff = getEffectiveMaxDims(fr20, tolerance);
-      const allFitFR20 = groupItems.every(item => {
-        const maxDim = Math.max(item.l, item.w, item.h);
-        return maxDim <= fr20Eff.maxL;
-      });
-      if (allFitFR20) candidates.push({ spec: fr20, units: calcUnitsForGroup(groupItems, fr20) });
+      if (groupItems.every(item => fitsByRotation(item, fr20Eff))) {
+        candidates.push({ spec: fr20, units: calcUnitsForGroup(groupItems, fr20) });
+      }
 
-      // 尝试40FR（FR可以超宽超高，只需检查最长边不超过箱长）
+      // 尝试40FR
       const fr40 = CONTAINER_DB['40FR'];
       const fr40Eff = getEffectiveMaxDims(fr40, tolerance);
-      const allFitFR40 = groupItems.every(item => {
-        const maxDim = Math.max(item.l, item.w, item.h);
-        return maxDim <= fr40Eff.maxL;
-      });
-      if (allFitFR40) candidates.push({ spec: fr40, units: calcUnitsForGroup(groupItems, fr40) });
+      if (groupItems.every(item => fitsByRotation(item, fr40Eff))) {
+        candidates.push({ spec: fr40, units: calcUnitsForGroup(groupItems, fr40) });
+      }
     }
 
     if (candidates.length === 0) return null;
@@ -740,17 +719,17 @@ function recommendMixedContainers(items, tolerance = 0.05) {
   const comboSpecs = [];
   const parts = [];
 
-  // 1. 处理标准货组
+  // 1. 处理标准货组：只能用标准柜（20GP/40HQ），不能用 FR/OT
   if (groupStandard.length > 0) {
-    const best = pickBestSingleSpec(groupStandard);
+    const best = pickBestSingleSpec(groupStandard, ['standard']);
     if (!best) return null; // 标准货无法装载
     for (let i = 0; i < best.units; i++) comboSpecs.push(best.spec);
     parts.push(`${best.spec.nameCN}×${best.units}`);
   }
 
-  // 2. 处理OT货组
+  // 2. 处理OT货组：只能用开顶柜
   if (groupOT.length > 0) {
-    const best = pickBestSingleSpec(groupOT);
+    const best = pickBestSingleSpec(groupOT, ['openTop']);
     if (!best) return null;
     for (let i = 0; i < best.units; i++) comboSpecs.push(best.spec);
     parts.push(`${best.spec.nameCN}×${best.units}`);
