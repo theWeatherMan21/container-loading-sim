@@ -37,6 +37,22 @@ npx tauri dev
 - App：`src-tauri/target/release/bundle/macos/智能装箱模拟系统.app`
 - DMG：`src-tauri/target/release/bundle/dmg/智能装箱模拟系统_1.0.0_aarch64.dmg`
 
+## 安装后打不开？
+
+### macOS 提示「App is damaged and can't be opened」
+
+这是因为应用尚未经过 Apple 公证，macOS Gatekeeper 拦截了从网上下载的未签名应用。**应用本身没有损坏**，按以下步骤即可运行：
+
+1. 把 `/Applications/智能装箱模拟系统.app` 拖到废纸篓。
+2. 重新从 `.dmg` 把应用拖进 `/Applications`。
+3. 打开 Terminal，执行：
+   ```bash
+   xattr -cr /Applications/智能装箱模拟系统.app
+   ```
+4. 正常双击打开应用。
+
+如需完全避免此提示，需要 Apple Developer Program 账号对应用进行签名和公证。
+
 ## Windows 端（保留）
 
 在 Windows 环境或交叉编译环境中执行：
