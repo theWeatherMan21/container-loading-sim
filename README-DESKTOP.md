@@ -53,6 +53,12 @@ npx tauri dev
 
 如需完全避免此提示，需要 Apple Developer Program 账号对应用进行签名和公证。
 
+### Windows 提示「Windows 已保护你的电脑」/ Microsoft Defender SmartScreen
+
+这是因为安装包未购买代码签名证书。点击提示上的「更多信息」→「仍要运行」即可继续安装使用。
+
+如需完全避免此提示，需要购买 Windows 代码签名证书。
+
 ## Windows 端（保留）
 
 在 Windows 环境或交叉编译环境中执行：
