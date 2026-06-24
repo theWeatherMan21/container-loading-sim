@@ -391,9 +391,11 @@ const PackingEngine = (() => {
 
         let totalScore = score + fitScore * CONSTANTS.FIT_WEIGHT;
 
-        // FR 箱型稳定性惩罚：货物高度超过箱体名义高度时惩罚该朝向
-        // 避免算法因 FR 有效高度巨大（含超限余量）而错误激励竖放
-        if (container.type === 'flatRack' && container.H > 0 && o.h > container.H + CONSTANTS.EPS) {
+        // FR/OT 稳定性惩罚：货物高度超过箱体名义高度时惩罚该朝向
+        // FR 有效高度含 FR_REALITY_LIMITS，OT 有效高度含 maxOverHeight
+        // 两者都会膨胀 space.H 导致 fitZ 错误激励竖放
+        const hasInflatedHeight = container.type === 'flatRack' || container.type === 'openTop';
+        if (hasInflatedHeight && container.H > 0 && o.h > container.H + CONSTANTS.EPS) {
           const stabilityPenalty = (o.h / container.H) * CONSTANTS.FIT_WEIGHT * 0.5;
           totalScore -= stabilityPenalty;
         }
