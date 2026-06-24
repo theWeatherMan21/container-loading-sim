@@ -42,6 +42,28 @@ const CONTAINER_DB = {
     allowOverHeight: false, allowOverWidth: false, allowOverLength: false
   },
 
+  // ═══ 开顶柜 (Open Top) ═══
+  '20OT': {
+    code: '20OT', name: '20尺开顶柜', nameCN: '20尺开顶',
+    L: 5.900, W: 2.350, H: 2.393,
+    doorW: 2.290, doorH: Infinity,
+    payload: 21770,
+    volume: 5.900 * 2.350 * 2.393,
+    type: 'openTop',
+    allowOverHeight: true, maxOverHeight: 0.5,
+    allowOverWidth: false, allowOverLength: false
+  },
+  '40OT': {
+    code: '40OT', name: '40尺开顶柜', nameCN: '40尺开顶',
+    L: 12.036, W: 2.350, H: 2.392,
+    doorW: 2.290, doorH: Infinity,
+    payload: 26510,
+    volume: 12.036 * 2.350 * 2.392,
+    type: 'openTop',
+    allowOverHeight: true, maxOverHeight: 0.5,
+    allowOverWidth: false, allowOverLength: false
+  },
+
   // ═══ 冷冻柜 (Reefer) ═══
   '20RF': {
     code: '20RF', name: '20尺冷冻柜', nameCN: '20尺冷柜',
@@ -123,6 +145,7 @@ const CONTAINER_DB = {
 /**
  * 箱型说明：
  * - 标准柜 (standard)：20GP/40GP/40HQ/45HQ — 有门约束，不允许超限
+ * - 开顶柜 (openTop)：20OT/40OT — 门高=∞（吊装），门宽约束有效，允许超高0.5m
  * - 冷冻柜 (standard)：20RF/40RF/40HRF — 有门约束，不允许超限，载重较低
  * - 框架柜 (flatRack)：20FR/40FR — 无门无侧壁，可超长0.5m/超宽0.3m/超高0.5m
  * - 平板柜 (flatRack)：20PF/40PF — 无侧壁，超限同框架柜
@@ -242,12 +265,20 @@ function checkDoorConstraint(item, container, tolerance = 0.05) {
   const effDoorW = container.doorW - tolerance;
   const effDoorH = container.doorH - tolerance;
 
-  // 框架柜/平板柜无门约束（两侧均可进/吊装）
+  // 框架柜无门约束（两侧均可进），OT 仅跳过高度约束
   if (container.type === 'flatRack') {
     return { pass: true, reasons };
   }
+  if (container.type === 'openTop') {
+    // OT 仅需要宽度通过门，高度不受限
+    const minDim = Math.min(item.l, item.w, item.h);
+    if (minDim <= effDoorW) {
+      return { pass: true, reasons };
+    }
+    return { pass: false, reasons };
+  }
 
-  // 标准柜/冷冻柜：检查截面是否 ≤ 门宽×门高
+  // 检查是否存在一个截面 ≤ 门宽×门高
   const crossSections = [
     { a: item.l, b: item.w },
     { a: item.l, b: item.h },
@@ -269,7 +300,7 @@ function checkDoorConstraint(item, container, tolerance = 0.05) {
 
   if (!anyPass) {
     reasons.push(
-      `货物无截面能通过箱门(门宽${effDoorW.toFixed(3)}m×门高${effDoorH.toFixed(3)}m)，建议使用框架柜/平板柜`
+      `货物无截面能通过箱门(门宽${effDoorW.toFixed(3)}m×门高${effDoorH.toFixed(3)}m)，建议使用开顶柜或框架柜`
     );
   }
 
@@ -391,7 +422,7 @@ function checkFRLengthRule(item) {
  * 判断单件货物最低要求的箱型类别（按经济优先级）
  * @param {object} item - {l, w, h, weight}
  * @param {number} tolerance
- * @returns {'20GP'|'40HQ'|'FR'|'none'} 最低要求箱型类别
+ * @returns {'20GP'|'40HQ'|'OT'|'FR'|'none'} 最低要求箱型类别
  */
 function classifyItemByContainerType(item, tolerance = 0.05) {
   const gp20 = CONTAINER_DB['20GP'];
@@ -413,9 +444,19 @@ function classifyItemByContainerType(item, tolerance = 0.05) {
     if (hq40Door.pass) {
       if (fitsByRotation(item, getEffectiveMaxDims(hq40, tolerance))) return '40HQ';
     }
+
+    // 3. 检查能否通过OT门（仅宽度约束）并fit有效尺寸
+    const ot20 = CONTAINER_DB['20OT'];
+    const ot40 = CONTAINER_DB['40OT'];
+    const ot20Door = checkDoorConstraint(item, ot20, tolerance);
+    const ot40Door = checkDoorConstraint(item, ot40, tolerance);
+    if (ot20Door.pass || ot40Door.pass) {
+      if (fitsByRotation(item, getEffectiveMaxDims(ot20, tolerance)) ||
+          fitsByRotation(item, getEffectiveMaxDims(ot40, tolerance))) return 'OT';
+    }
   }
 
-  // 3. 检查框架柜（无门约束，允许合理超限）
+  // 4. 检查框架柜（无门约束，允许合理超限）
   const frRule = checkFRLengthRule(item);
 
   if (!frRule.frAllowed) {
@@ -474,12 +515,15 @@ function recommendContainer(items, tolerance = 0.05) {
 
   // 汇总最低要求箱型
   const needsFR = classifications.some(c => c === 'FR');
+  const needsOT = classifications.some(c => c === 'OT');
   const needs40HQ = classifications.some(c => c === '40HQ');
 
   const gp20 = CONTAINER_DB['20GP'];
   const gp40 = CONTAINER_DB['40GP'];
   const hq40 = CONTAINER_DB['40HQ'];
   const hq45 = CONTAINER_DB['45HQ'];
+  const ot20 = CONTAINER_DB['20OT'];
+  const ot40 = CONTAINER_DB['40OT'];
   const reasoning = [];
 
   let primary = null;
@@ -512,6 +556,29 @@ function recommendContainer(items, tolerance = 0.05) {
         reasoning.push('货物尺寸需要框架柜，40FR可装载');
       } else {
         return { needsMixed: true, reason: '单箱框架柜无法装载所有货物，需多箱装载' };
+      }
+    }
+  } else if (needsOT) {
+    // 必须用开顶柜
+    const ot20Eff = getEffectiveMaxDims(ot20, tolerance);
+    const ot40Eff = getEffectiveMaxDims(ot40, tolerance);
+
+    const allFit20OT = items.every(item => fitsByRotation(item, ot20Eff));
+    const weightFit20OT = totalWeight <= ot20.payload;
+
+    if (allFit20OT && weightFit20OT) {
+      primary = ot20;
+      alternatives = [ot40];
+      reasoning.push('货物高度超限需吊装，20OT开顶柜可装载');
+    } else {
+      const allFit40OT = items.every(item => fitsByRotation(item, ot40Eff));
+      const weightFit40OT = totalWeight <= ot40.payload;
+      if (allFit40OT && weightFit40OT) {
+        primary = ot40;
+        alternatives = [ot20];
+        reasoning.push('货物高度/重量超限，40OT开顶柜可装载');
+      } else {
+        return { needsMixed: true, reason: '单箱开顶柜无法装载所有货物，需多箱装载' };
       }
     }
   } else if (needs40HQ) {
@@ -629,6 +696,7 @@ function recommendMixedContainers(items, tolerance = 0.05) {
 
   // 逐件分类
   const groupStandard = []; // 可通过标准柜门（含冷冻柜门）的货物
+  const groupOT = [];       // 只能通过OT门的货物
   const groupFR = [];       // 只能通过框架柜/平板柜的货物
   const noneItems = [];     // 明确无法装载的货物
 
@@ -636,6 +704,8 @@ function recommendMixedContainers(items, tolerance = 0.05) {
     const cls = classifyItemByContainerType(item, tolerance);
     if (cls === '20GP' || cls === '40HQ') {
       groupStandard.push(item);
+    } else if (cls === 'OT') {
+      groupOT.push(item);
     } else if (cls === 'FR') {
       groupFR.push(item);
     } else if (cls === 'none') {
@@ -671,6 +741,18 @@ function recommendMixedContainers(items, tolerance = 0.05) {
       }
     }
 
+    if (allow('openTop')) {
+      const otTypes = ['20OT', '40OT'];
+      for (const code of otTypes) {
+        const spec = CONTAINER_DB[code];
+        if (!spec) continue;
+        const eff = getEffectiveMaxDims(spec, tolerance);
+        if (groupItems.every(item => fitsByRotation(item, eff))) {
+          candidates.push({ spec, units: calcUnitsForGroup(groupItems, spec) });
+        }
+      }
+    }
+
     if (allow('flatRack')) {
       const frTypes = ['20FR', '40FR', '20PF', '40PF'];
       for (const code of frTypes) {
@@ -687,10 +769,11 @@ function recommendMixedContainers(items, tolerance = 0.05) {
 
     candidates.sort((a, b) => {
       if (a.units !== b.units) return a.units - b.units;
-      // 经济优先级：小箱优先，框架柜次之，平板柜最后
+      // 经济优先级：小箱优先，开顶柜次之，框架柜最后
       const priority = {
         '20GP': 1, '40GP': 2, '40HQ': 3, '45HQ': 4,
         '20RF': 5, '40RF': 6, '40HRF': 7,
+        '20OT': 8, '40OT': 9,
         '20FR': 10, '40FR': 11, '20PF': 12, '40PF': 13
       };
       return (priority[a.spec.code] || 99) - (priority[b.spec.code] || 99);
@@ -705,6 +788,13 @@ function recommendMixedContainers(items, tolerance = 0.05) {
 
   if (groupStandard.length > 0) {
     const best = pickBestSingleSpec(groupStandard, ['standard']);
+    if (!best) return null;
+    for (let i = 0; i < best.units; i++) comboSpecs.push(best.spec);
+    parts.push(`${best.spec.nameCN}×${best.units}`);
+  }
+
+  if (groupOT.length > 0) {
+    const best = pickBestSingleSpec(groupOT, ['openTop']);
     if (!best) return null;
     for (let i = 0; i < best.units; i++) comboSpecs.push(best.spec);
     parts.push(`${best.spec.nameCN}×${best.units}`);

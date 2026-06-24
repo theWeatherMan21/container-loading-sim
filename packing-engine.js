@@ -695,7 +695,7 @@ const PackingEngine = (() => {
     // 利用率
     const totalVolume = placedItems.reduce((s, i) => s + i.l * i.w * i.h, 0);
     const containerVol = container.L * container.W * container.H;
-    // 标准柜按标称容积计算利用率；FR 因可超限，标称利用率上限为 100%
+    // 标准柜/OT 按标称容积计算利用率；FR 因可超限，标称利用率上限为 100%
     const utilization = containerVol > 0 ? Math.min(1, totalVolume / containerVol) : 0;
     // FR 空间效率：按含现实超限上限的有效包络容积计算
     const effectiveVolume = effDims.maxL * effDims.maxW * effDims.maxH;

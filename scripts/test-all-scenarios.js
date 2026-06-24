@@ -238,6 +238,7 @@ logHeader('数据库完整性验证');
 
 const expectedContainers = [
   '20GP', '40GP', '40HQ', '45HQ',
+  '20OT', '40OT',
   '20RF', '40RF', '40HRF',
   '20FR', '40FR',
   '20PF', '40PF'
@@ -258,7 +259,7 @@ const unexpectedCodes = allCodes.filter(c => !expectedContainers.includes(c));
 if (unexpectedCodes.length > 0) {
   logFail(`多余箱型: ${unexpectedCodes.join(', ')}`);
 } else {
-  logOk('箱型数量正确 (11种)');
+  logOk('箱型数量正确 (13种)');
 }
 
 // FR 验证

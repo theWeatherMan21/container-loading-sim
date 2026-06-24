@@ -18,6 +18,7 @@ const MORANDI_COLORS = [
 
 const CONTAINER_COLORS = {
   standard: 0x6B9080,
+  openTop: 0x7B9E8F,
   flatRack: 0x8B7D6B
 };
 
@@ -190,7 +191,13 @@ function renderContainerBox(group, containerSpec) {
     side: THREE.DoubleSide, depthWrite: false
   });
 
-  if (type === 'flatRack') {
+  if (type === 'openTop') {
+    const bottom = new THREE.Mesh(new THREE.PlaneGeometry(L * SCALE, W * SCALE), faceMat);
+    bottom.rotation.x = -Math.PI / 2;
+    bottom.position.set(0, -H * SCALE / 2, 0);
+    group.add(bottom);
+    addWalls(group, L, W, H, faceMat, false);
+  } else if (type === 'flatRack') {
     const bottom = new THREE.Mesh(new THREE.PlaneGeometry(L * SCALE, W * SCALE), faceMat);
     bottom.rotation.x = -Math.PI / 2;
     bottom.position.set(0, -H * SCALE / 2, 0);
@@ -223,7 +230,7 @@ function renderContainerBox(group, containerSpec) {
   originMarker.position.set(-L * SCALE / 2, -H * SCALE / 2, -W * SCALE / 2);
   group.add(originMarker);
 
-  // FR 无门约束，跳过门标记；其他箱型标记箱门位置
+  // FR 无门约束跳过门标记；OT 门高=∞ 使用箱高占位
   if (containerSpec.type !== 'flatRack') {
     const doorH = Math.min(containerSpec.doorH !== Infinity ? containerSpec.doorH : H, H);
     const doorMarker = new THREE.Mesh(
