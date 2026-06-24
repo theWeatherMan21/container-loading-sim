@@ -167,7 +167,7 @@
               <th>型号</th>
               <th>长(m)</th><th>宽(m)</th><th>高(m)</th>
               <th>数量</th><th>单重(kg)</th>
-              <th>可叠放</th><th>不可翻转</th>
+              <th>可叠放</th><th title="勾选后该货物不会被旋转放置，始终保持原始长宽高方向">不可翻转</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -246,6 +246,24 @@
 <script src="field-parser.js"></script>
 <script src="packing-engine.js"></script>
 <script type="module" src="three-viewer.js"></script>
+<script>
+  // Three.js 模块加载失败 fallback（ES module 错误不冒泡到 onerror）
+  window.addEventListener('error', function(e) {
+    if (e.message && e.message.includes('Failed to fetch') && e.filename && e.filename.includes('three')) {
+      console.error('[3D] Three.js module load failed:', e.message);
+      var container = document.getElementById('three-viewer-container');
+      if (container) {
+        container.innerHTML = '<div style="color:#C97B7B;padding:40px;text-align:center;font-family:Work Sans,sans-serif">3D 模块加载失败，请刷新页面重试</div>';
+      }
+    }
+  }, true);
+  // 超时检测：5s 后 ThreeViewer 仍未定义
+  setTimeout(function() {
+    if (typeof window.ThreeViewer === 'undefined') {
+      console.warn('[3D] ThreeViewer module not loaded after 5s timeout');
+    }
+  }, 5000);
+</script>
 <script src="pdf-exporter.js"></script>
 <script src="tauri-plugin-bridge.js"></script>
 <script src="app.js"></script>

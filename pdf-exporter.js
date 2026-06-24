@@ -20,7 +20,7 @@ const PdfExporter = (() => {
       .replace(/'/g, '&#39;');
   }
 
-  function renderReportHtml(result, visualization) {
+  function renderReportHtml(result, visualization, config = {}) {
     const el = document.getElementById('pdf-report');
     if (!el) {
       throw new Error('PDF 报告模板元素 #pdf-report 不存在');
@@ -109,6 +109,12 @@ const PdfExporter = (() => {
       <div style="text-align:center;margin-bottom:24px;">
         <h1 style="font-size:28px;color:#7B9A7B;margin:0;">装箱方案报告</h1>
         <p style="color:#7A7570;margin:8px 0 0;font-size:12px;">生成时间: ${new Date().toLocaleString('zh-CN')}</p>
+        <p style="color:#7A7570;margin:4px 0 0;font-size:11px;">
+          操作间隙: ${(config.tolerance != null ? config.tolerance : 5)}cm | 
+          箱型: ${escapeHtml(config.containerType || result.containerName || '自动')} |
+          自动重算: ${config.autoRetry ? '是' : '否'}
+          ${config.recalculated ? ' | 已触发重算' : ''}
+        </p>
       </div>
       <h2 style="font-size:16px;margin:0 0 8px;color:#3C3A36;">方案汇总</h2>
       <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:16px;">
@@ -139,7 +145,7 @@ const PdfExporter = (() => {
    * @param {object} result - PackingEngine.calculate 的返回结果
    * @param {object} visualization - ThreeViewer.buildVisualization 的返回结果
    */
-  async function generateReport(result, visualization) {
+  async function generateReport(result, visualization, config = {}) {
     const { jsPDF } = window.jspdf;
     if (!jsPDF) {
       alert('PDF库未加载，请确认 vendor/jspdf.umd.min.js 已引入');
@@ -156,7 +162,7 @@ const PdfExporter = (() => {
     }
 
     try {
-      const reportEl = renderReportHtml(result, visualization);
+      const reportEl = renderReportHtml(result, visualization, config);
 
       // Ensure element is visible and rendered for html2canvas
       const originalVisibility = reportEl.style.visibility;

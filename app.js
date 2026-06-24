@@ -94,10 +94,13 @@
       if (el) {
         if (i === step) {
           el.classList.remove('hidden');
-          el.style.animation = 'fadeIn 0.35s ease';
+          el.classList.remove('step-enter');
+          // 触发重排以重启动画
+          void el.offsetWidth;
+          el.classList.add('step-enter');
         } else {
           el.classList.add('hidden');
-          el.style.animation = '';
+          el.classList.remove('step-enter');
         }
       }
     }
@@ -158,11 +161,10 @@
     }
 
     const alert = document.createElement('div');
-    alert.className = style.className;
+    alert.className = style.className + ' alert-enter';
     alert.style.cssText =
       `background:${style.bg};border:1px solid ${style.border};border-radius:12px;` +
-      `padding:12px 16px;color:${style.color};font-size:13px;margin-bottom:16px;` +
-      'animation:fadeIn 0.3s ease;';
+      `padding:12px 16px;color:${style.color};font-size:13px;margin-bottom:16px;`;
     alert.textContent = `${style.icon} ${message}`;
 
     const target = targetSelector
@@ -215,7 +217,7 @@
     const bar = $('progress-bar');
     const txt = $('progress-text');
     const status = $('calculation-status');
-    if (bar) bar.style.display = 'none';
+    if (bar) { bar.style.display = 'none'; bar.classList.remove('progress--indeterminate'); }
     if (txt) txt.style.display = 'none';
     if (status) status.style.display = 'none';
   }
@@ -224,35 +226,23 @@
    * Simulate progress while synchronous calculation runs.
    * Uses setTimeout chains to yield to the browser between ticks.
    */
-  function simulateProgress(durationMs, onDone) {
-    const steps = 10;
-    const interval = durationMs / steps;
-    let current = 0;
-
-    function tick() {
-      current++;
-      const pct = Math.min(current / steps * 100, 90);
-      const messages = [
-        '正在分析货物数据…', '正在匹配最佳箱型…', '正在执行3D装箱算法…',
-        '正在优化空间利用率…', '正在校验约束条件…', '正在生成装箱方案…',
-        '正在进行重叠检测…', '正在计算重量分布…', '正在整理结果…', '即将完成…'
-      ];
-      updateProgress(pct, messages[Math.min(current - 1, messages.length - 1)]);
-
-      if (current < steps) {
-        setTimeout(tick, interval);
-      } else {
-        // Final stretch: jump to 100%
-        updateProgress(100, '计算完成 ✨');
-        setTimeout(() => {
-          hideProgress();
-          if (onDone) onDone();
-        }, 400);
-      }
+  function simulateProgress(_durationMs, onDone) {
+    // Indeterminate 脉冲进度条，不显示虚假百分比
+    const bar = $('progress-bar');
+    if (bar) {
+      bar.style.display = 'block';
+      bar.classList.add('progress--indeterminate');
+    }
+    const status = $('progress-text');
+    if (status) {
+      status.style.display = 'block';
+      status.textContent = '算法计算中，大货量可能需较长时间…';
     }
 
-    updateProgress(0, '初始化计算…');
-    setTimeout(tick, interval);
+    // 延迟启动真实计算，确保 UI 渲染
+    setTimeout(() => {
+      if (onDone) onDone();
+    }, 100);
   }
 
   // ═══════════════════════════════════════════
@@ -304,7 +294,10 @@
       e.preventDefault();
       e.stopPropagation();
       dropZone.classList.remove('drop-zone--drag-over');
-      const file = e.dataTransfer.files[0];
+      // 防御性检查：某些环境（如 Tauri WebView）下 dataTransfer 可能为 null
+      const dt = e.dataTransfer;
+      if (!dt || !dt.files || dt.files.length === 0) return;
+      const file = dt.files[0];
       if (file) handleFileUpload(file);
     });
 
@@ -375,8 +368,8 @@
       errors.push('请填写长/宽/高，或填写体积');
     }
 
-    if (!Number.isFinite(inputs.weight) || inputs.weight < 0) {
-      errors.push('请填写毛重');
+    if (!Number.isFinite(inputs.weight) || inputs.weight <= 0) {
+      errors.push('请填写毛重（须大于0）');
     }
 
     return errors;
@@ -821,7 +814,27 @@
     if (select) {
       select.addEventListener('change', function () {
         state.selectedUnit = this.value;
+        // 单位变更后重新提取数据并刷新预览
+        refreshPreviewForUnitChange();
       });
+    }
+  }
+
+  /**
+   * 单位选择器变更后，用新单位重新提取数据并刷新预览表。
+   * 数据始终以米 (m) 为标准单位存储，表头动态标注源单位。
+   */
+  function refreshPreviewForUnitChange() {
+    if (!state.parsedResult || !state.dataRows || !state.columnMapping) return;
+    try {
+      const newMapping = state.columnMapping.map(m => ({
+        field: m.field === 'ignore' ? 'unknown' : m.field
+      }));
+      const result = FP.reExtract(state.dataRows, state.parsedResult.headerRow, newMapping, state.selectedUnit);
+      state.parsedResult.items = result.items;
+      renderDataPreview(state.parsedResult);
+    } catch (err) {
+      console.error('[Unit refresh] reExtract failed:', err);
     }
   }
 
@@ -837,13 +850,17 @@
       return;
     }
 
+    // 源单位 → 标准单位 (m) 的动态标注
+    const srcUnit = state.selectedUnit || 'mm';
+    const unitNote = srcUnit === 'm' ? '' : `（源: ${srcUnit} → m）`;
+
     let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
     html += '<thead><tr style="background:#F5F0EB;">';
     html += '<th style="padding:6px 8px;text-align:left;border-bottom:2px solid #D4C5B9;">#</th>';
     html += '<th style="padding:6px 8px;text-align:left;border-bottom:2px solid #D4C5B9;">型号</th>';
-    html += '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #D4C5B9;">长(m)</th>';
-    html += '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #D4C5B9;">宽(m)</th>';
-    html += '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #D4C5B9;">高(m)</th>';
+    html += `<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #D4C5B9;">长(m)${unitNote}</th>`;
+    html += `<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #D4C5B9;">宽(m)${unitNote}</th>`;
+    html += `<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #D4C5B9;">高(m)${unitNote}</th>`;
     html += '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #D4C5B9;">数量</th>';
     html += '<th style="padding:6px 8px;text-align:right;border-bottom:2px solid #D4C5B9;">重量(kg)</th>';
     html += '</tr></thead><tbody>';
@@ -1283,7 +1300,7 @@
         🔄 已自动推荐混合装箱方案：${mixedRec.description}
       </div>
       <div style="font-size:13px;color:#3D3535;margin-bottom:4px;">
-        共 ${mixedRec.specs.length} 个集装箱
+        共推荐 ${mixedRec.specs.length} 个集装箱（实际装箱时可能更少）
       </div>
       <div style="font-size:12px;color:#7A706B;margin-top:6px;">${mixedRec.reasoning}</div>
       <div style="margin-top:8px;padding:8px;background:#FFF9E6;border:1px solid #E8D5A0;border-radius:8px;font-size:12px;color:#8B7516;">
@@ -1508,16 +1525,9 @@
         return item;
       });
 
-      // Show progress
-      showProgress('开始装箱计算…');
-
-      // Simulate progress for ~2 seconds, then do actual calculation
-      simulateProgress(2000, () => {
+      // Show indeterminate progress, then do actual calculation
+      simulateProgress(100, () => {
         try {
-          // Show final progress stage
-          showProgress('正在执行装箱算法…');
-          updateProgress(95, '正在生成最终方案…');
-
           // 检测混合装箱模式
           const useMixed = state.useMixed && state.containerSpecs && state.containerSpecs.length > 0;
           const calcOptions = {
@@ -1555,6 +1565,8 @@
           state._calculating = false;
           console.error('Calculation error:', calcErr);
           showError('装箱计算失败：' + (calcErr.message || '未知错误') + '，请尝试调整参数 🥛');
+          // 添加重新开始按钮
+          appendRestartButton('step-3');
         }
       });
 
@@ -1563,7 +1575,21 @@
       state._calculating = false;
       console.error('Start calculation error:', err);
       showError('启动计算失败：' + (err.message || '未知错误') + ' 🥛');
+      appendRestartButton('step-3');
     }
+  }
+
+  function appendRestartButton(stepId) {
+    const step = $(stepId);
+    if (!step) return;
+    // 避免重复添加
+    if (step.querySelector('.restart-btn')) return;
+    const btn = document.createElement('button');
+    btn.className = 'btn-secondary restart-btn';
+    btn.textContent = '🔄 重新开始';
+    btn.style.cssText = 'margin-top:12px;';
+    btn.onclick = () => { App.resetState(); };
+    step.appendChild(btn);
   }
 
   // ═══════════════════════════════════════════
@@ -1596,8 +1622,14 @@
     const el = $('result-summary');
     if (!el) return;
 
+    // 检查实际 vs 推荐差异
+    const recommendedBoxes = state.containerSpecs ? state.containerSpecs.length : 1;
+    const actualBoxes = result.containerCount;
+    const hasRecommendationGap = recommendedBoxes > actualBoxes;
+
     const cards = [
-      { label: '所需箱数', value: result.containerCount, unit: '个', color: '#8FA39B' },
+      { label: '所需箱数', value: actualBoxes, unit: '个', color: '#8FA39B',
+        hint: hasRecommendationGap ? `推荐${recommendedBoxes}箱（体积估算×1.3余量），实际EMS算法优化为${actualBoxes}箱` : null },
       { label: '平均利用率', value: (result.avgUtilization * 100).toFixed(1), unit: '%', color: '#8B9E8B' },
       { label: '总装载重量', value: (result.totalWeightLoaded / 1000).toFixed(2), unit: '吨', color: '#B8A89A' },
       { label: '已装件数', value: result.totalPlaced, unit: '件', color: '#9C8B7D' }
@@ -1611,8 +1643,21 @@
         <div style="font-size:24px;font-weight:700;color:${c.color};">
           ${c.value}<span style="font-size:14px;font-weight:400;margin-left:2px;">${c.unit}</span>
         </div>
+        ${c.hint ? `<div style="font-size:10px;color:#C9A05A;margin-top:2px;">${c.hint}</div>` : ''}
       </div>
     `).join('');
+
+    // 如果推荐箱数 > 实际箱数，显示提示条
+    if (hasRecommendationGap && result.skippedContainers && result.skippedContainers.length > 0) {
+      const skippedInfo = result.skippedContainers.map(s =>
+        `${s.code}（${s.reason}）`
+      ).join('、');
+      el.insertAdjacentHTML('beforeend', `
+        <div style="width:100%;margin-top:8px;padding:8px 12px;background:#FFF9E6;border:1px solid #E8D5A0;border-radius:8px;font-size:11px;color:#8B7516;">
+          💡 推荐${recommendedBoxes}箱基于体积估算（×1.3 余量），实际 3D EMS 优化算法仅需 ${actualBoxes} 箱即可装完所有货物。未使用的箱型：${skippedInfo}
+        </div>
+      `);
+    }
 
     el.style.display = 'flex';
     el.style.gap = '12px';
@@ -1800,7 +1845,25 @@
     try {
       const TV = getTV();
       if (!TV) {
-        // ThreeViewer 尚未加载，显示占位并轮询重试
+        // 区分 ES Module 加载失败 vs 正在加载中
+        const isESModuleFailed = typeof window.ThreeViewer === 'undefined'
+          && document.querySelector('script[type="module"][src="three-viewer.js"]');
+
+        if (isESModuleFailed) {
+          // 明确告知用户3D模块不可用，不自动降级
+          container.innerHTML = `<div style="color:#C97B7B;padding:40px;text-align:center;background:#FFF5F5;border-radius:12px;margin:10px;">
+            <div style="font-weight:600;margin-bottom:8px;">3D 模块加载失败 🥛</div>
+            <div style="font-size:12px;color:#8B6B6B;margin-bottom:8px;">
+              ES Module 无法加载（可能因 file:// 协议限制）。<br>
+              请使用本地服务器打开：<code style="background:#fff;padding:2px 8px;border-radius:4px;">python3 -m http.server 8080</code>
+            </div>
+            <button id="btn-force-2d" style="padding:6px 16px;border:1px solid #C97B7B;border-radius:8px;background:#fff;color:#C97B7B;cursor:pointer;">使用 2D 降级视图</button>
+          </div>`;
+          document.getElementById('btn-force-2d')?.addEventListener('click', () => render2DFallback(result, container));
+          return;
+        }
+
+        // ThreeViewer 正在加载中，显示占位并轮询重试
         container.innerHTML = '<div id="tv-waiting" style="color:#999;padding:40px;text-align:center;">3D 模块加载中，请稍后重试 ☕</div>';
         let retries = 0;
         const retryInterval = setInterval(() => {
@@ -1837,10 +1900,10 @@
 
     let html = `<div style="padding:${padding}px;overflow:auto;">`;
     html += `<div style="background:#FFF9E6;border:1px solid #E8D5A0;border-radius:12px;padding:12px 16px;margin-bottom:16px;color:#8B7516;font-size:13px;">`;
+    html += `⚠️ <strong>3D 视图不可用，当前为 2D 降级示意图。</strong><br>`;
+    html += `仅显示底层（z=0）货物俯视图，${result.totalPlaced}件中部分高层叠放货物未显示。`;
     if (isFileProtocol) {
-      html += `💡 <strong>file:// 协议限制了 3D 模块加载。</strong><br>建议用本地服务器打开以获得完整 3D 视图：<code style="background:#fff;padding:2px 6px;border-radius:4px;">python3 -m http.server 8080</code>`;
-    } else {
-      html += `💡 3D 模块加载超时，已切换为 2D 装载示意图。`;
+      html += `<br>💡 <strong>file:// 协议限制了 3D 模块加载。</strong>建议用本地服务器打开以获得完整 3D 视图：<code style="background:#fff;padding:2px 6px;border-radius:4px;">python3 -m http.server 8080</code>`;
     }
     html += `</div>`;
     html += `<div style="display:flex;gap:${gap}px;flex-wrap:wrap;">`;
@@ -1848,7 +1911,7 @@
     const colors = ['#B8A89A','#9C8B7D','#A8B6B1','#D4C5B9','#8FA39B','#C4B5A5','#BEAD98','#A9AFA9','#99A8A0','#CCBFB0'];
 
     containers.forEach((c, idx) => {
-      const spec = CDB.CONTAINER_DB[c.containerCode] || { L: c.totalWeight ? 1 : 1, W: 1, H: 1 };
+      const spec = CDB.CONTAINER_DB[c.containerCode] || { L: 12, W: 2.4, H: 2.6 };
       const maxL = spec.L;
       const maxW = spec.W;
       const scale = Math.min((cardW - 40) / maxL, (cardH - 80) / maxW);
@@ -1871,6 +1934,7 @@
       html += `</div>`;
       html += `<div style="margin-top:8px;font-size:12px;color:#7A706B;text-align:center;">`;
       html += `装载 ${c.placedItems.length} 件 · 利用率 ${((c.utilization || 0) * 100).toFixed(1)}%`;
+      html += ` · 共${result.totalPlaced}件（含叠放层）`;
       html += `</div>`;
       html += `</div>`;
     });
@@ -1897,7 +1961,12 @@
         });
       }
 
-      await PDFX.generateReport(state.packingResult, state.visualization);
+      await PDFX.generateReport(state.packingResult, state.visualization, {
+        tolerance: state.tolerance,
+        autoRetry: true,
+        recalculated: state.packingResult && state.packingResult.recalculated,
+        containerType: state.useMixed ? '混合箱型' : (state.containerSpec ? state.containerSpec.nameCN : '')
+      });
 
       // 清除一次性处理器，避免影响后续浏览器导出
       if (window.TauriBridge && window.TauriBridge.isTauri) {

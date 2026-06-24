@@ -595,6 +595,19 @@ select option {
   width: 0%;
 }
 
+/* Indeterminate progress (脉冲动画，替代假百分比) */
+.progress--indeterminate .progress__bar {
+  width: 40% !important;
+  animation: progress-pulse 1.5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  transition: none;
+}
+
+@keyframes progress-pulse {
+  0% { transform: translateX(-60%); opacity: 0.6; }
+  50% { transform: translateX(120%); opacity: 1; }
+  100% { transform: translateX(-60%); opacity: 0.6; }
+}
+
 /* ── 12. Result Summary ── */
 .result-summary {
   display: flex;
@@ -726,6 +739,16 @@ select option {
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+/* Step 切换进场动画（替代 app.js 内联 style.animation） */
+.step-enter {
+  animation: fadeIn 0.35s ease;
+}
+
+/* Alert 进场动画（替代 app.js 内联 cssText 中的 animation） */
+.alert-enter {
+  animation: fadeIn 0.3s ease;
 }
 
 @keyframes fadeInUp {

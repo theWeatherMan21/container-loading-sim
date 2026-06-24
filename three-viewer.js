@@ -48,6 +48,11 @@ let resizeObserver = null;
 let allCanvases = [];
 let geoCache = null;         // { key → { boxGeo, edgeGeo, material, edgeMaterial } }
 let disposed = false;        // 全局 disposed 标记，防止延迟 rAF 继续调度
+let raycaster = null;        // 悬停检测
+let mouseNDC = null;         // 鼠标归一化坐标
+let tooltipEl = null;        // tooltip DOM 元素
+let cargoMeshes = [];        // 所有 cargo mesh 平铺引用（用于 raycasting）
+let canvasEls = [];          // 所有 canvas DOM 元素（用于 event listener 清理）
 
 // ═══════════════════════════════════════════
 // 资源清理
@@ -110,6 +115,17 @@ function disposeAll() {
   activeCanvasId = null;
   allCanvases = [];
   parentEl = null;
+
+  // 清理 tooltip 和悬停事件
+  if (tooltipEl) { tooltipEl.remove(); tooltipEl = null; }
+  raycaster = null;
+  mouseNDC = null;
+  cargoMeshes = [];
+  for (const canvas of canvasEls) {
+    canvas.removeEventListener('mousemove', onCanvasMouseMove);
+    canvas.removeEventListener('mouseleave', () => {});
+  }
+  canvasEls = [];
 }
 
 // ═══════════════════════════════════════════
@@ -213,13 +229,16 @@ function renderContainerBox(group, containerSpec) {
   originMarker.position.set(-L * SCALE / 2, -H * SCALE / 2, -W * SCALE / 2);
   group.add(originMarker);
 
-  const doorH = Math.min(containerSpec.doorH !== Infinity ? containerSpec.doorH : H, H);
-  const doorMarker = new THREE.Mesh(
-    new THREE.BoxGeometry(L * SCALE * 0.02, doorH * SCALE, containerSpec.doorW * SCALE),
-    new THREE.MeshPhongMaterial({ color: 0xffcc00, transparent: true, opacity: 0.3 })
-  );
-  doorMarker.position.set(L * SCALE / 2, 0, 0);
-  group.add(doorMarker);
+  // FR 无门约束，跳过门标记；其他箱型标记箱门位置
+  if (containerSpec.type !== 'flatRack') {
+    const doorH = Math.min(containerSpec.doorH !== Infinity ? containerSpec.doorH : H, H);
+    const doorMarker = new THREE.Mesh(
+      new THREE.BoxGeometry(L * SCALE * 0.02, doorH * SCALE, (containerSpec.doorW !== Infinity ? containerSpec.doorW : W) * SCALE),
+      new THREE.MeshPhongMaterial({ color: 0xffcc00, transparent: true, opacity: 0.3 })
+    );
+    doorMarker.position.set(L * SCALE / 2, 0, 0);
+    group.add(doorMarker);
+  }
 }
 
 function addWalls(group, L, W, H, mat, includeTop) {
@@ -322,96 +341,143 @@ function createLabelSprite(text, bgColor = 'rgba(255,255,255,0.85)', textColor =
 // 货物渲染（共享几何体 + 条件标签）
 // ═══════════════════════════════════════════
 
-function renderCargo(group, placedItems, containerSpec) {
+function renderCargo(group, placedItems, containerSpec, containerIndex = 0) {
+  console.log(`[3D Diag] renderCargo 入口: 箱${containerIndex + 1}, placedItems.length=${placedItems.length}`);
+
   const modelColors = {};
   let colorIdx = 0;
   const totalCount = placedItems.length;
   const usePerItemLabel = totalCount <= SPRITE_LABEL_THRESHOLD;
+  let renderedCount = 0;
+  let skippedCount = 0;
 
-  for (const item of placedItems) {
-    // 优先使用 packing engine 分配的 colorIndex（手动录入时保持录入顺序颜色），
-    // 其次按 model 分组分配
-    let color;
-    if (Number.isFinite(item.colorIndex)) {
-      color = MORANDI_COLORS[item.colorIndex % MORANDI_COLORS.length];
-    } else {
-      if (!modelColors[item.model]) {
-        modelColors[item.model] = MORANDI_COLORS[colorIdx % MORANDI_COLORS.length];
-        colorIdx++;
+  for (let idx = 0; idx < placedItems.length; idx++) {
+    const item = placedItems[idx];
+
+    try {
+      // 数据完整性校验
+      if (!item || typeof item !== 'object') {
+        console.warn(`[3D Diag] ⚠️ 箱${containerIndex + 1} item[${idx}] 无效:`, item);
+        skippedCount++;
+        continue;
       }
-      color = modelColors[item.model];
-    }
 
-    const { l, w, h, x, y, z, stackable, model } = item;
+      const l = item.l, w = item.w, h = item.h;
+      const x = item.x, y = item.y, z = item.z;
+      const stackable = item.stackable;
+      const model = item.model;
 
-    // Three.js 坐标转换
-    const cx = x * SCALE - containerSpec.L * SCALE / 2 + l * SCALE / 2;
-    const cy = z * SCALE - containerSpec.H * SCALE / 2 + h * SCALE / 2;
-    const cz = y * SCALE - containerSpec.W * SCALE / 2 + w * SCALE / 2;
+      // 数值有效性检查
+      if (![l, w, h, x, y, z].every(v => Number.isFinite(v))) {
+        console.warn(`[3D Diag] ⚠️ 箱${containerIndex + 1} item[${idx}] (${model}) 含无效坐标: l=${l}, w=${w}, h=${h}, x=${x}, y=${y}, z=${z}`);
+        skippedCount++;
+        continue;
+      }
 
-    // 共享几何体
-    const shared = getOrCreateGeo(l, w, h, color);
-    const mesh = new THREE.Mesh(shared.boxGeo, shared.material);
-    mesh.position.set(cx, cy, cz);
-    mesh.userData = { model, l, w, h, stackable, position: `(${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)})` };
-    group.add(mesh);
+      // 尺寸合理性检查（单件货物超过 100m 视为异常数据）
+      if (l > 100 || w > 100 || h > 100) {
+        console.error(`[3D Diag] ❌ 箱${containerIndex + 1} item[${idx}] (${model}) 尺寸异常: ${l}×${w}×${h}`);
+        skippedCount++;
+        continue;
+      }
 
-    // 共享线框
-    const edgeLine = new THREE.LineSegments(shared.edgeGeo, shared.edgeMaterial);
-    edgeLine.position.copy(mesh.position);
-    group.add(edgeLine);
+      // 优先使用 packing engine 分配的 colorIndex（手动录入时保持录入顺序颜色），
+      // 其次按 model 分组分配
+      let color;
+      if (Number.isFinite(item.colorIndex)) {
+        color = MORANDI_COLORS[item.colorIndex % MORANDI_COLORS.length];
+      } else {
+        if (!modelColors[model]) {
+          modelColors[model] = MORANDI_COLORS[colorIdx % MORANDI_COLORS.length];
+          colorIdx++;
+        }
+        color = modelColors[model];
+      }
 
-    // 不可叠放标记
-    if (!stackable) {
-      const topGeo = new THREE.PlaneGeometry(l * SCALE, w * SCALE);
-      const topMesh = new THREE.Mesh(topGeo,
-        new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.35, side: THREE.DoubleSide }));
-      topMesh.rotation.x = -Math.PI / 2;
-      topMesh.position.set(cx, cy + h * SCALE / 2 + 0.005, cz);
-      group.add(topMesh);
-    }
+      // Three.js 坐标转换
+      const cx = x * SCALE - containerSpec.L * SCALE / 2 + l * SCALE / 2;
+      const cy = z * SCALE - containerSpec.H * SCALE / 2 + h * SCALE / 2;
+      const cz = y * SCALE - containerSpec.W * SCALE / 2 + w * SCALE / 2;
 
-    // 异常检测
-    const origDims = [item.origL, item.origW, item.origH].filter(Boolean);
-    const isRotated = origDims.length === 3 && (
-      origDims[0] !== l || origDims[1] !== w || origDims[2] !== h
-    );
-    const isOverLength = l > containerSpec.L + 0.01;
-    const isOverWidth = w > containerSpec.W + 0.01;
-    const isOverHeight = h > containerSpec.H + 0.01;
-    const isOverSize = isOverLength || isOverWidth || isOverHeight;
-    const isAbnormal = isOverSize || isRotated || !stackable;
+      // 共享几何体
+      const shared = getOrCreateGeo(l, w, h, color);
+      const mesh = new THREE.Mesh(shared.boxGeo, shared.material);
+      mesh.position.set(cx, cy, cz);
+      mesh.userData = { model, l, w, h, weight: item.weight, x, y, z, stackable, rotated: false, overSize: false };
+      cargoMeshes.push(mesh);
+      group.add(mesh);
 
-    if (isAbnormal) {
-      const labels = [];
-      if (isOverLength) labels.push(`超长${(l - containerSpec.L).toFixed(2)}m`);
-      if (isOverWidth) labels.push(`超宽${(w - containerSpec.W).toFixed(2)}m`);
-      if (isOverHeight) labels.push(`超高${(h - containerSpec.H).toFixed(2)}m`);
-      if (isRotated) labels.push('旋转');
-      if (!stackable) labels.push('禁叠');
+      // 共享线框
+      const edgeLine = new THREE.LineSegments(shared.edgeGeo, shared.edgeMaterial);
+      edgeLine.position.copy(mesh.position);
+      group.add(edgeLine);
 
-      const markerColor = isOverSize ? 0xff0000 : 0xff8800;
-      const extBox = new THREE.BoxGeometry(l * SCALE, h * SCALE, w * SCALE);
-      const extLine = new THREE.LineSegments(
-        new THREE.EdgesGeometry(extBox),
-        new THREE.LineBasicMaterial({ color: markerColor, transparent: true, opacity: 0.6 })
+      // 不可叠放标记
+      if (!stackable) {
+        const topGeo = new THREE.PlaneGeometry(l * SCALE, w * SCALE);
+        const topMesh = new THREE.Mesh(topGeo,
+          new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.35, side: THREE.DoubleSide }));
+        topMesh.rotation.x = -Math.PI / 2;
+        topMesh.position.set(cx, cy + h * SCALE / 2 + 0.005, cz);
+        group.add(topMesh);
+      }
+
+      // 异常检测
+      const origDims = [item.origL, item.origW, item.origH].filter(Boolean);
+      const isRotated = origDims.length === 3 && (
+        origDims[0] !== l || origDims[1] !== w || origDims[2] !== h
       );
-      extLine.position.copy(mesh.position);
-      group.add(extLine);
+      const isOverLength = l > containerSpec.L + 0.01;
+      const isOverWidth = w > containerSpec.W + 0.01;
+      const isOverHeight = h > containerSpec.H + 0.01;
+      const isOverSize = isOverLength || isOverWidth || isOverHeight;
+      const isAbnormal = isOverSize || isRotated || !stackable;
 
-      const markerLabel = createLabelSprite(labels.join(' '), 'rgba(255,255,255,0.9)', isOverSize ? '#C97B7B' : '#B8885A');
-      markerLabel.position.set(cx, cy + h * SCALE / 2 + 0.25, cz);
-      group.add(markerLabel);
-    }
+      if (isAbnormal) {
+        // 更新 mesh.userData 供 tooltip 使用
+        mesh.userData.rotated = isRotated;
+        mesh.userData.overSize = isOverSize;
 
-    // 序号标签：小规模全打，大规模只给异常件
-    if (usePerItemLabel || isAbnormal) {
-      const seq = item.id || item.sequence || model;
-      const label = createLabelSprite(String(seq), 'rgba(245,240,235,0.9)', '#3C3A36');
-      label.position.set(cx, cy - h * SCALE / 2 - 0.15, cz);
-      group.add(label);
+        const labels = [];
+        if (isOverLength) labels.push(`超长${(l - containerSpec.L).toFixed(2)}m`);
+        if (isOverWidth) labels.push(`超宽${(w - containerSpec.W).toFixed(2)}m`);
+        if (isOverHeight) labels.push(`超高${(h - containerSpec.H).toFixed(2)}m`);
+        if (isRotated) labels.push('旋转');
+        if (!stackable) labels.push('禁叠');
+
+        const markerColor = isOverSize ? (containerSpec.type === 'flatRack' ? 0xE8A838 : 0xff0000) : 0xff8800;
+        const markerOpacity = isOverSize ? (containerSpec.type === 'flatRack' ? 0.75 : 0.6) : 0.6;
+        const extBox = new THREE.BoxGeometry(l * SCALE, h * SCALE, w * SCALE);
+        const extLine = new THREE.LineSegments(
+          new THREE.EdgesGeometry(extBox),
+          new THREE.LineBasicMaterial({ color: markerColor, transparent: true, opacity: markerOpacity })
+        );
+        extLine.position.copy(mesh.position);
+        group.add(extLine);
+
+        const labelBg = isOverSize ? (containerSpec.type === 'flatRack' ? '#D4A843' : '#C97B7B') : '#B8885A';
+        const markerLabel = createLabelSprite(labels.join(' '), 'rgba(255,255,255,0.9)', labelBg);
+        markerLabel.position.set(cx, cy + h * SCALE / 2 + 0.25, cz);
+        group.add(markerLabel);
+      }
+
+      // 序号标签：小规模全打，大规模只给异常件
+      if (usePerItemLabel || isAbnormal) {
+        const seq = item.id || item.sequence || model;
+        const label = createLabelSprite(String(seq), 'rgba(245,240,235,0.9)', '#3C3A36');
+        label.position.set(cx, cy - h * SCALE / 2 - 0.15, cz);
+        group.add(label);
+      }
+
+      renderedCount++;
+
+    } catch (itemErr) {
+      console.error(`[3D Diag] ❌ 箱${containerIndex + 1} item[${idx}] (${item?.model}) 渲染异常:`, itemErr);
+      skippedCount++;
     }
   }
+
+  console.log(`[3D Diag] renderCargo 完成: 箱${containerIndex + 1}, 总数=${totalCount}, 渲染=${renderedCount}, 跳过=${skippedCount}`);
 }
 
 // ═══════════════════════════════════════════
@@ -671,6 +737,60 @@ function captureScreenshotFixed(canvasId, targetWidth = 800, targetHeight = 600)
 }
 
 // ═══════════════════════════════════════════
+// 悬停 Tooltip 交互
+// ═══════════════════════════════════════════
+
+function onCanvasMouseMove(e) {
+  if (!raycaster || !mouseNDC || !tooltipEl || !activeCanvasId) return;
+
+  const canvas = e.target;
+  const rect = canvas.getBoundingClientRect();
+  mouseNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouseNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+  const camera = cameras[activeCanvasId];
+  if (!camera) return;
+
+  raycaster.setFromCamera(mouseNDC, camera);
+  const intersects = raycaster.intersectObjects(cargoMeshes, false);
+
+  if (intersects.length > 0) {
+    const obj = intersects[0].object;
+    const data = obj.userData;
+    if (data && data.model) {
+      const lines = [
+        `<strong>${escapeHtml(data.model)}</strong>`,
+        `尺寸: ${data.l.toFixed(2)}×${data.w.toFixed(2)}×${data.h.toFixed(2)} m`,
+        `重量: ${data.weight.toFixed(1)} kg`,
+        `位置: (${data.x.toFixed(2)}, ${data.y.toFixed(2)}, ${data.z.toFixed(2)})`,
+        data.rotated ? '⚠️ 已旋转' : '',
+        !data.stackable ? '🚫 不可叠放' : '',
+        data.overSize ? '⚠️ 超限' : ''
+      ].filter(Boolean).join('<br>');
+
+      tooltipEl.innerHTML = lines;
+      tooltipEl.style.display = 'block';
+      // 定位：canvas 内坐标
+      const parentRect = parentEl ? parentEl.getBoundingClientRect() : rect;
+      const x = e.clientX - parentRect.left + 12;
+      const y = e.clientY - parentRect.top - 12;
+      tooltipEl.style.left = x + 'px';
+      tooltipEl.style.top = y + 'px';
+    } else {
+      tooltipEl.style.display = 'none';
+    }
+  } else {
+    tooltipEl.style.display = 'none';
+  }
+}
+
+function escapeHtml(str) {
+  const el = document.createElement('div');
+  el.textContent = String(str);
+  return el.innerHTML;
+}
+
+// ═══════════════════════════════════════════
 // 构建完整可视化
 // ═══════════════════════════════════════════
 
@@ -683,6 +803,24 @@ function buildVisualization(result, parentId) {
     return;
   }
 
+  // ═══ 诊断日志：输入数据快照 ═══
+  console.log('[3D Diag] === buildVisualization 入口 ===');
+  console.log('[3D Diag] containers.length:', result.containers.length);
+  console.log('[3D Diag] containerCount (result):', result.containerCount);
+  console.log('[3D Diag] totalPlaced (result):', result.totalPlaced);
+  let totalPlacedInContainers = 0;
+  for (let ci = 0; ci < result.containers.length; ci++) {
+    const cc = result.containers[ci];
+    const itemCount = cc.placedItems ? cc.placedItems.length : 0;
+    totalPlacedInContainers += itemCount;
+    console.log(`[3D Dig]   箱${ci + 1}: code=${cc.containerCode}, items=${itemCount}, utilization=${cc.utilization}, weight=${cc.totalWeight}`);
+  }
+  console.log('[3D Diag] containers 内 placedItems 总数:', totalPlacedInContainers);
+  if (totalPlacedInContainers !== result.totalPlaced) {
+    console.error(`[3D Diag] ⚠️ 数据不一致！result.totalPlaced=${result.totalPlaced} 但 containers 内实际 ${totalPlacedInContainers} 件`);
+  }
+  // ═══ 诊断日志结束 ═══
+
   disposeAll();
   disposed = false;
   parentEl = parent;
@@ -692,10 +830,31 @@ function buildVisualization(result, parentId) {
 
   for (let i = 0; i < result.containers.length; i++) {
     const c = result.containers[i];
-    const containerSpec = window.ContainerDB?.CONTAINER_DB?.[c.containerCode];
+
+    // 安全获取 containerSpec，支持大小写不敏感 + trim + 默认兜底（绝不跳过）
+    let containerSpec = null;
+    const rawCode = (c.containerCode || '').trim();
+    if (window.ContainerDB?.CONTAINER_DB) {
+      // 精确匹配
+      containerSpec = window.ContainerDB.CONTAINER_DB[rawCode];
+      if (!containerSpec) {
+        // 大小写不敏感匹配
+        const lowerCode = rawCode.toLowerCase();
+        const allKeys = Object.keys(window.ContainerDB.CONTAINER_DB);
+        const fuzzyKey = allKeys.find(k => k.toLowerCase() === lowerCode);
+        if (fuzzyKey) {
+          console.warn(`[3D Diag] 🔧 箱${i + 1}: "${rawCode}" 模糊匹配到 "${fuzzyKey}"`);
+          containerSpec = window.ContainerDB.CONTAINER_DB[fuzzyKey];
+          c.containerCode = fuzzyKey;
+        }
+      }
+    }
     if (!containerSpec) {
-      console.warn(`ThreeViewer: 未知箱型 "${c.containerCode}"，跳过`);
-      continue;
+      console.error(`[3D Diag] ❌ 箱${i + 1}: containerCode="${c.containerCode}" 在 CONTAINER_DB 中未找到。可用 keys:`,
+        Object.keys(window.ContainerDB?.CONTAINER_DB || {}));
+      // 不跳过！使用默认规格渲染，确保3D场景不丢失
+      containerSpec = { L: 12, W: 2.4, H: 2.6, code: c.containerCode || 'UNKNOWN', nameCN: '未知箱型', type: 'standard', payload: 28000 };
+      console.warn(`[3D Diag] 🔧 箱${i + 1}: 使用默认规格 ${containerSpec.L}×${containerSpec.W}×${containerSpec.H}`);
     }
 
     const wrapper = document.createElement('div');
@@ -709,15 +868,15 @@ function buildVisualization(result, parentId) {
     wrapper.appendChild(canvas);
     parent.appendChild(wrapper);
 
-    // 信息标签
+    // 信息标签（增加货物计数）
     const info = document.createElement('div');
     info.className = 'three-info';
     const isFR = c.containerCode && c.containerCode.includes('FR');
     const eff = isFR && c.spaceEfficiency != null
       ? `${(c.spaceEfficiency * 100).toFixed(1)}%`
-      : `${(c.utilization * 100).toFixed(1)}%`;
+      : `${(c.utilization != null ? (c.utilization * 100).toFixed(1) : 'N/A')}%`;
     info.style.cssText = 'position:absolute;top:8px;left:8px;background:rgba(255,255,255,0.85);backdrop-filter:blur(6px);padding:4px 10px;border-radius:6px;font-size:11px;color:#666;pointer-events:none;';
-    info.textContent = `箱${i + 1} | ${c.containerCode} | ${eff} | ${(c.totalWeight || 0).toFixed(0)}kg`;
+    info.textContent = `箱${i + 1} | ${c.containerCode} | ${eff} | ${(c.totalWeight || 0).toFixed(0)}kg | ${(c.placedItems || []).length}件`;
     wrapper.appendChild(info);
 
     allCanvases.push({ wrapper, canvasId: canvas.id, index: i });
@@ -732,7 +891,9 @@ function buildVisualization(result, parentId) {
     const containerGroup = scene.getObjectByName('container');
     if (containerGroup) {
       containerGroup.userData = { diagonal };
-      renderCargo(containerGroup, c.placedItems, containerSpec);
+      renderCargo(containerGroup, c.placedItems || [], containerSpec, i);
+    } else {
+      console.error(`[3D Diag] ❌ 箱${i + 1}: containerGroup 未创建！`);
     }
 
     setupCameraRenderer(scene, canvas.id, containerSpec);
@@ -743,6 +904,33 @@ function buildVisualization(result, parentId) {
     activeCanvasId = allCanvases[0].canvasId;
     allCanvases[0].wrapper.style.display = 'block';
   }
+
+  // 创建 tooltip DOM
+  if (!tooltipEl) {
+    tooltipEl = document.createElement('div');
+    tooltipEl.id = 'three-tooltip';
+    tooltipEl.style.cssText = 'position:absolute;display:none;' +
+      'background:rgba(60,58,54,0.92);color:#F5F0EB;padding:8px 12px;' +
+      'border-radius:8px;font-size:11px;line-height:1.5;' +
+      'pointer-events:none;z-index:9999;white-space:nowrap;' +
+      'backdrop-filter:blur(4px);border:1px solid rgba(184,168,154,0.3);';
+    parent.appendChild(tooltipEl);
+  }
+
+  // 绑定 mouse move 事件到所有 canvas
+  raycaster = new THREE.Raycaster();
+  mouseNDC = new THREE.Vector2();
+  canvasEls = [];
+
+  allCanvases.forEach(ac => {
+    const canvas = ac.wrapper.querySelector('canvas');
+    if (!canvas) return;
+    canvasEls.push(canvas);
+    canvas.addEventListener('mousemove', onCanvasMouseMove, { passive: true });
+    canvas.addEventListener('mouseleave', () => {
+      if (tooltipEl) tooltipEl.style.display = 'none';
+    });
+  });
 
   // 启动单 rAF + ResizeObserver
   startAnimation();

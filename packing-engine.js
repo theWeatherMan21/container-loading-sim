@@ -27,6 +27,7 @@ const PackingEngine = (() => {
   };
 
   const SUPPORT_MIN_RATIO = 0.70; // 底面最小支撑覆盖率
+  const MIN_FR_FLOOR_RATIO = 0.50; // FR 框架柜：z=0 时货物底面投影至少50%与地板重合
 
   // ═══════════════════════════════════════════
   // EMS 空间数据结构
@@ -223,14 +224,17 @@ const PackingEngine = (() => {
    * 优先选择最靠近里端（深处）、最低、最左的位置
    * z优先级最高（越低越好），y次之，x再次
    */
-  function dblScore(spaceX, spaceY, spaceZ, container) {
-    // 归一化到 [0,1]
+  function dblScore(spaceX, spaceY, spaceZ, container, effDims) {
+    // 归一化到 [0,1]，使用有效尺寸避免 FR 超限空间产生负分
+    const maxL = (effDims && effDims.maxL) || container.L;
+    const maxW = (effDims && effDims.maxW) || container.W;
+    const maxH = (effDims && effDims.maxH) || container.H;
     // xScore: 越靠近 origin（x=0，即车厢里端），分数越高
-    const xScore = 1 - (spaceX / container.L);
+    const xScore = 1 - (spaceX / maxL);
     // yScore: 越靠近左边（y=0），分数越高
-    const yScore = 1 - (spaceY / container.W);
+    const yScore = 1 - (spaceY / maxW);
     // zScore: 越靠近底部（z=0），分数越高
-    const zScore = 1 - (spaceZ / container.H);
+    const zScore = 1 - (spaceZ / maxH);
 
     // DBL 优先：z 最低 > x 最里 > y 最左
     return zScore * CONSTANTS.DBL_Z_WEIGHT + xScore * CONSTANTS.DBL_X_WEIGHT + yScore * CONSTANTS.DBL_Y_WEIGHT;
@@ -280,6 +284,23 @@ const PackingEngine = (() => {
     const ox2 = Math.min(x + l, fx2);
     const oy2 = Math.min(y + w, fy2);
     return ox < ox2 - CONSTANTS.EPS && oy < oy2 - CONSTANTS.EPS;
+  }
+
+  /**
+   * 计算货物底面投影与 FR 地板的重合比例
+   * @returns {number} 0~1，表示底面投影有百分之多少与地板重合
+   */
+  function calcFloorOverlapRatio(x, y, l, w, container) {
+    const fx = 0, fy = 0;
+    const fx2 = container.L, fy2 = container.W;
+    const ox = Math.max(x, fx);
+    const oy = Math.max(y, fy);
+    const ox2 = Math.min(x + l, fx2);
+    const oy2 = Math.min(y + w, fy2);
+    if (ox >= ox2 - CONSTANTS.EPS || oy >= oy2 - CONSTANTS.EPS) return 0;
+    const overlapArea = (ox2 - ox) * (oy2 - oy);
+    const cargoArea = l * w;
+    return cargoArea > CONSTANTS.EPS ? overlapArea / cargoArea : 0;
   }
 
   /**
@@ -353,12 +374,15 @@ const PackingEngine = (() => {
         // FR 框架柜：任意层（含 z=0）货物底面必须与地板有交集
         // 因 EMS 空间含超限余量，z=0 时货物也可能被放到地板外，需显式检查
         if (container.type === 'flatRack') {
-          const floorOverlap = baseOverlapsContainerFloor(space.x, space.y, o.l, o.w, container);
-          if (!floorOverlap) continue;
+          const floorRatio = calcFloorOverlapRatio(space.x, space.y, o.l, o.w, container);
+          if (floorRatio <= CONSTANTS.EPS) continue; // 无交集，完全在底板外
+          // z=0 时：必须至少 MIN_FR_FLOOR_RATIO（50%）的投影落在地板上
+          // 防止货物"挂在侧面"
+          if (space.z <= CONSTANTS.EPS && floorRatio < MIN_FR_FLOOR_RATIO) continue;
         }
 
         // 分数
-        const score = dblScore(space.x, space.y, space.z, container);
+        const score = dblScore(space.x, space.y, space.z, container, effDims);
         // 优先选空间利用率最高的（贴合）
         const fitX = o.l / space.L;
         const fitY = o.w / space.W;
@@ -512,8 +536,10 @@ const PackingEngine = (() => {
 
             // FR 框架柜：任意层（含 z=0）货物底面必须与地板有交集
             if (container.type === 'flatRack') {
-              const floorOverlap = baseOverlapsContainerFloor(px, py, l, w, container);
-              if (!floorOverlap) continue;
+              const floorRatio = calcFloorOverlapRatio(px, py, l, w, container);
+              if (floorRatio <= CONSTANTS.EPS) continue; // 无交集
+              // z=0 时：至少 50% 投影落在地板上
+              if (pz <= CONSTANTS.EPS && floorRatio < MIN_FR_FLOOR_RATIO) continue;
             }
 
             const entry = {
@@ -677,7 +703,7 @@ const PackingEngine = (() => {
       weightUtil,
       totalWeight: currentWeight,
       totalVolume,
-      containerCode: container.code
+      containerCode: container.code || 'UNKNOWN'
     };
   }
 
@@ -760,8 +786,8 @@ const PackingEngine = (() => {
       const result = packSingleContainer(remaining, spec, options);
       containers.push({
         ...result,
-        containerCode: spec.code,
-        containerName: spec.nameCN
+        containerCode: spec.code || result.containerCode || 'UNKNOWN',
+        containerName: spec.nameCN || spec.name || '未知箱型'
       });
 
       if (result.placedItems.length === 0) {
@@ -886,12 +912,18 @@ const PackingEngine = (() => {
       });
     }
 
-    // 6. FR 底板投影（仅 flatRack）：所有货物底面必须与地板有交集
+    // 6. FR 底板投影（仅 flatRack）
+    // z=0: 必须至少 50% 投影与地板重合（防止"挂在侧面"）
+    // z>0: 至少与地板有交集（由下方货物接力支撑）
     if (isFR) {
       const floorViolations = [];
+      const floorWarningItems = [];
       for (const item of placedItems) {
-        if (!baseOverlapsContainerFloor(item.x, item.y, item.l, item.w, container)) {
-          floorViolations.push(`${item.model} 底面投影未与地板重合 @(${item.x.toFixed(2)},${item.y.toFixed(2)})`);
+        const ratio = calcFloorOverlapRatio(item.x, item.y, item.l, item.w, container);
+        if (ratio <= CONSTANTS.EPS) {
+          floorViolations.push(`${item.model} 底面投影未与地板重合 @(${item.x.toFixed(2)},${item.y.toFixed(2)}) z=${item.z.toFixed(2)}`);
+        } else if (item.z <= CONSTANTS.EPS && ratio < MIN_FR_FLOOR_RATIO) {
+          floorWarningItems.push(`${item.model} 地板覆盖率仅${(ratio*100).toFixed(0)}%（需≥${(MIN_FR_FLOOR_RATIO*100).toFixed(0)}%） @(${item.x.toFixed(2)},${item.y.toFixed(2)})`);
         }
       }
       if (floorViolations.length > 0) {
@@ -899,6 +931,14 @@ const PackingEngine = (() => {
           type: 'floorViolation',
           message: `${floorViolations.length} 件货物底面投影未落在地板上`,
           details: floorViolations.slice(0, 5)
+        });
+      }
+      if (floorWarningItems.length > 0) {
+        warnings.push({
+          type: 'lowFloorCoverage',
+          message: `${floorWarningItems.length} 件 z=0 层货物地板覆盖率不足${(MIN_FR_FLOOR_RATIO*100).toFixed(0)}%（可能悬挂于侧面）`,
+          details: floorWarningItems.slice(0, 5),
+          suggestRecalc: true
         });
       }
     }
@@ -1141,11 +1181,28 @@ const PackingEngine = (() => {
     if (mixedContainers && mixedContainers.length > 0) {
       let result = mixedMultiContainerPack(items, mixedContainers, { tolerance, sortStrategy: 'volume-desc' });
 
-      // 自检所有箱（每个箱用各自的箱型规格）
-      const allChecks = result.containers.map(c => {
-        const spec = mixedContainers.find(s => s.code === c.containerCode) || mixedContainers[0];
+      // 自检所有箱（每个箱用各自的箱型规格，按 code 查找 → index 兜底 → 首个规格兜底）
+      let allChecks = result.containers.map((c, idx) => {
+        const spec = mixedContainers.find(s => s.code === c.containerCode)
+          || mixedContainers[idx]
+          || mixedContainers[0];
         return selfCheck(c, spec, tolerance);
       });
+
+      // selfCheck → recalibrate 闭环：若有 suggestRecalc 警告，换排序策略重算
+      if (autoRetry) {
+        const hasRecalcWarning = allChecks.some(c => c.warnings.some(w => w.suggestRecalc));
+        if (hasRecalcWarning) {
+          result = mixedMultiContainerPack(items, mixedContainers, { tolerance, sortStrategy: 'weight-desc' });
+          allChecks = result.containers.map((c, idx) => {
+            const spec = mixedContainers.find(s => s.code === c.containerCode)
+              || mixedContainers[idx]
+              || mixedContainers[0];
+            return selfCheck(c, spec, tolerance);
+          });
+          result.recalculated = true;
+        }
+      }
 
       result.checks = allChecks;
       result.hasErrors = allChecks.some(c => c.errors.length > 0);
