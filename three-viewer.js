@@ -18,7 +18,6 @@ const MORANDI_COLORS = [
 
 const CONTAINER_COLORS = {
   standard: 0x6B9080,
-  openTop: 0x7B9E8F,
   flatRack: 0x8B7D6B
 };
 
@@ -191,13 +190,7 @@ function renderContainerBox(group, containerSpec) {
     side: THREE.DoubleSide, depthWrite: false
   });
 
-  if (type === 'openTop') {
-    const bottom = new THREE.Mesh(new THREE.PlaneGeometry(L * SCALE, W * SCALE), faceMat);
-    bottom.rotation.x = -Math.PI / 2;
-    bottom.position.set(0, -H * SCALE / 2, 0);
-    group.add(bottom);
-    addWalls(group, L, W, H, faceMat, false);
-  } else if (type === 'flatRack') {
+  if (type === 'flatRack') {
     const bottom = new THREE.Mesh(new THREE.PlaneGeometry(L * SCALE, W * SCALE), faceMat);
     bottom.rotation.x = -Math.PI / 2;
     bottom.position.set(0, -H * SCALE / 2, 0);
@@ -211,6 +204,7 @@ function renderContainerBox(group, containerSpec) {
     p2.position.set(L * SCALE / 2, 0, 0);
     group.add(p2);
   } else {
+    // 标准柜/冷冻柜：完整 box 框架
     const box = new THREE.Mesh(boxGeo, new THREE.MeshPhongMaterial({
       color, transparent: true, opacity: 0.06,
       side: THREE.DoubleSide, depthWrite: false

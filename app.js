@@ -1627,12 +1627,14 @@
     const actualBoxes = result.containerCount;
     const hasRecommendationGap = recommendedBoxes > actualBoxes;
 
+    const totalItems = result.totalItems || (result.totalPlaced + (result.unplacedCount || 0));
     const cards = [
       { label: '所需箱数', value: actualBoxes, unit: '个', color: '#8FA39B',
         hint: hasRecommendationGap ? `推荐${recommendedBoxes}箱（体积估算×1.3余量），实际EMS算法优化为${actualBoxes}箱` : null },
       { label: '平均利用率', value: (result.avgUtilization * 100).toFixed(1), unit: '%', color: '#8B9E8B' },
       { label: '总装载重量', value: (result.totalWeightLoaded / 1000).toFixed(2), unit: '吨', color: '#B8A89A' },
-      { label: '已装件数', value: result.totalPlaced, unit: '件', color: '#9C8B7D' }
+      { label: '已装件数', value: `${result.totalPlaced}`, unit: `/ ${totalItems} 件`, color: '#9C8B7D',
+        hint: result.unplacedCount > 0 ? `${result.unplacedCount} 件未能装入` : '全部装入 ✓' }
     ];
 
     el.innerHTML = cards.map(c => `

@@ -389,7 +389,14 @@ const PackingEngine = (() => {
         const fitZ = o.h / space.H;
         const fitScore = (fitX + fitY + fitZ) / 3;
 
-        const totalScore = score + fitScore * CONSTANTS.FIT_WEIGHT;
+        let totalScore = score + fitScore * CONSTANTS.FIT_WEIGHT;
+
+        // FR 箱型稳定性惩罚：货物高度超过箱体名义高度时惩罚该朝向
+        // 避免算法因 FR 有效高度巨大（含超限余量）而错误激励竖放
+        if (container.type === 'flatRack' && container.H > 0 && o.h > container.H + CONSTANTS.EPS) {
+          const stabilityPenalty = (o.h / container.H) * CONSTANTS.FIT_WEIGHT * 0.5;
+          totalScore -= stabilityPenalty;
+        }
 
         if (totalScore > bestScore) {
           bestScore = totalScore;
@@ -688,7 +695,7 @@ const PackingEngine = (() => {
     // 利用率
     const totalVolume = placedItems.reduce((s, i) => s + i.l * i.w * i.h, 0);
     const containerVol = container.L * container.W * container.H;
-    // 标准柜/OT 按标称容积计算利用率；FR 因可超限，标称利用率上限为 100%
+    // 标准柜按标称容积计算利用率；FR 因可超限，标称利用率上限为 100%
     const utilization = containerVol > 0 ? Math.min(1, totalVolume / containerVol) : 0;
     // FR 空间效率：按含现实超限上限的有效包络容积计算
     const effectiveVolume = effDims.maxL * effDims.maxW * effDims.maxH;
@@ -748,6 +755,7 @@ const PackingEngine = (() => {
       containers,
       containerCount: containers.length,
       totalPlaced,
+      totalItems: totalPlaced + remaining.length,  // 总待装件数
       unplacedCount: remaining.length,
       unplacedItems: remaining.map(i => i.model).filter((v, idx, arr) => arr.indexOf(v) === idx),
       avgUtilization,
@@ -830,6 +838,7 @@ const PackingEngine = (() => {
       containers: nonEmptyContainers,
       containerCount: nonEmptyContainers.length,
       totalPlaced,
+      totalItems: totalPlaced + remaining.length,
       unplacedCount: remaining.length,
       unplacedItems: remaining.map(i => i.model).filter((v, idx, arr) => arr.indexOf(v) === idx),
       avgUtilization,
