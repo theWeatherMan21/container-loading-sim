@@ -99,4 +99,30 @@ assert(result1.assignments.every(a => a.containerCode === '20FR'),
 assert(result1.unassigned.length === 0, 'Transformer: no unassigned items');
 
 console.log(`  planContainerAssignment (oversize): ${pass}/${pass+fail} total passed`);
+
+// ── Test 12-13: 重货不可叠打包 + 可叠货聚合 ──
+
+// Test 12: 重型不可叠按载重打包
+const aluItems = [];
+for (let i = 0; i < 10; i++) {
+  aluItems.push({ model: 'Alu-Ingot', l: 1.10, w: 1.10, h: 0.70, weight: 2850, stackable: false, quantity: 1 });
+}
+const result2 = planContainerAssignment(aluItems, Object.values(CDB.CONTAINER_DB));
+const totalAssigned2 = result2.assignments.reduce((s, a) => s + a.items.length, 0);
+assert(totalAssigned2 === 10, `Heavy 10x2850kg: all 10 assigned, got ${totalAssigned2}`);
+// 10 × 2850 = 28500kg, 20GP payload=28350kg(刚好超一点) or 40HQ=26510kg → 需要 1-2 箱
+assert(result2.assignments.length <= 2, `Heavy: should use ≤2 containers, got ${result2.assignments.length}`);
+
+// Test 13: 可叠货单箱聚合
+const cartons = [];
+for (let i = 0; i < 100; i++) {
+  cartons.push({ model: 'Carton', l: 0.55, w: 0.40, h: 0.35, weight: 15, stackable: true, quantity: 1 });
+}
+const result3 = planContainerAssignment(cartons, Object.values(CDB.CONTAINER_DB));
+const totalAssigned3 = result3.assignments.reduce((s, a) => s + a.items.length, 0);
+assert(totalAssigned3 === 100, `Stackable 100 cartons: all 100 assigned, got ${totalAssigned3}`);
+// 100 × 0.55×0.40×0.35 = 7.7m³, 20GP=33m³ — 1箱足够
+assert(result3.assignments.length === 1, `Cartons: should fit in 1 container, got ${result3.assignments.length}`);
+
+console.log(`  planContainerAssignment (heavy+stackable): ${pass}/${pass+fail} total passed`);
 if (fail > 0) process.exit(1);

@@ -120,7 +120,113 @@ const Planner = (() => {
       });
     }
 
-    // Step 3-6 待实现...
+    // Step 3: 重型不可叠分配
+    heavyNonStack.sort((a, b) => b.weight - a.weight);
+
+    // 标准箱型（非 FR/OT），按体积升序
+    const standardContainers = containerSpecs
+      .filter(s => s.type !== 'flatRack' && s.type !== 'openTop')
+      .sort((a, b) => (a.L * a.W * a.H) - (b.L * b.W * b.H));
+
+    let heavyAssignmentGroups = [];
+
+    for (const item of heavyNonStack) {
+      const itemVol = item.l * item.w * item.h;
+      let placed = false;
+
+      // 尝试加入已有组
+      for (const group of heavyAssignmentGroups) {
+        if (group.totalWeight + item.weight <= group.container.payload &&
+            (group.totalVolume + itemVol) <= group.container.L * group.container.W * group.container.H * 0.8) {
+          group.items.push(item);
+          group.totalWeight += item.weight;
+          group.totalVolume += itemVol;
+          placed = true;
+          break;
+        }
+      }
+
+      if (!placed) {
+        // 找能装下这件货的最小标准箱型
+        let bestContainer = null;
+        for (const c of standardContainers) {
+          if (item.weight <= c.payload &&
+              itemVol <= c.L * c.W * c.H * 0.8) {
+            bestContainer = c;
+            break;
+          }
+        }
+        if (bestContainer) {
+          heavyAssignmentGroups.push({
+            container: bestContainer,
+            items: [item],
+            totalWeight: item.weight,
+            totalVolume: itemVol
+          });
+        } else {
+          unassigned.push(item);
+        }
+      }
+    }
+
+    for (const group of heavyAssignmentGroups) {
+      assignments.push({
+        containerCode: group.container.code,
+        items: group.items,
+        reason: `重型不可叠分组，${group.items.length}件，总重${group.totalWeight.toFixed(0)}kg`
+      });
+    }
+
+    // Step 4: 可叠货聚合（单箱尽量满再开下一箱）
+    let stackableGroup = null;
+    for (let i = 0; i < stackableItems.length; i++) {
+      const item = stackableItems[i];
+      const itemVol = item.l * item.w * item.h;
+
+      if (!stackableGroup) {
+        for (const c of standardContainers) {
+          if (itemVol <= c.L * c.W * c.H * VOLUME_FACTOR) {
+            stackableGroup = {
+              container: c,
+              items: [],
+              totalVolume: 0,
+              totalWeight: 0
+            };
+            break;
+          }
+        }
+      }
+
+      if (stackableGroup) {
+        const maxVol = stackableGroup.container.L * stackableGroup.container.W * stackableGroup.container.H * VOLUME_FACTOR;
+        if (stackableGroup.totalVolume + itemVol > maxVol ||
+            stackableGroup.totalWeight + item.weight > stackableGroup.container.payload) {
+          assignments.push({
+            containerCode: stackableGroup.container.code,
+            items: stackableGroup.items,
+            reason: `可叠货聚合，${stackableGroup.items.length}件，体积${stackableGroup.totalVolume.toFixed(2)}m³`
+          });
+          stackableGroup = null;
+          i--; // 重试当前 item
+          continue;
+        }
+        stackableGroup.items.push(item);
+        stackableGroup.totalVolume += itemVol;
+        stackableGroup.totalWeight += item.weight;
+      } else {
+        unassigned.push(item);
+      }
+    }
+
+    if (stackableGroup && stackableGroup.items.length > 0) {
+      assignments.push({
+        containerCode: stackableGroup.container.code,
+        items: stackableGroup.items,
+        reason: `可叠货聚合，${stackableGroup.items.length}件`
+      });
+    }
+
+    // Step 5-6 待实现...
     return { assignments, unassigned };
   }
 
