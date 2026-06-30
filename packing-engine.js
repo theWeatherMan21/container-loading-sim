@@ -23,7 +23,12 @@ const PackingEngine = (() => {
     VOLUME_WASTE_FACTOR: 1.3, // 体积浪费估算系数
     MAX_CONTAINERS: 100,    // 多箱分配上限（防无限循环）
     SPATIAL_HASH_THRESHOLD: 200, // 启用空间哈希的货物数量阈值
-    SPATIAL_HASH_CELL_SIZE: 2.0  // 空间哈希网格单元大小（米）
+    SPATIAL_HASH_CELL_SIZE: 2.0, // 空间哈希网格单元大小（米）
+    // 智能排序：重型不可叠阈值（需要独占地板空间）
+    HEAVY_NONSTACKABLE_WEIGHT: 1000,  // 重量≥此值视为重型
+    HEAVY_NONSTACKABLE_MIN_DIM: 2.0,  // 最长边≥此值视为大件
+    // 承重检查：下方物品总重量必须 ≥ 上方物品重量 × 此系数
+    SUPPORT_WEIGHT_RATIO: 0.5
   };
 
   const SUPPORT_MIN_RATIO = 0.70; // 底面最小支撑覆盖率
@@ -331,6 +336,41 @@ const PackingEngine = (() => {
   }
 
   /**
+   * 承重感知支撑检查：z>0 时，校验下方物品是否能承受上方货物的重量。
+   *
+   * 逻辑：找出所有位于候选位置正下方、顶面正好在 space.z 高度的已放置物品，
+   * 累加其重量。下方总重量必须 ≥ 上方物品重量 × SUPPORT_WEIGHT_RATIO（默认0.5）。
+   *
+   * 防止场景：6200kg 发电机 → 12kg 纸箱（物理荒谬）
+   * 允许场景：850kg HVAC → 2800kg Steel-Plate（钢板在下承重足够）
+   *
+   * @param {number} x, y, z - 候选位置（z = 下方物品顶面高度）
+   * @param {number} l, w - 候选货物的朝向尺寸
+   * @param {number} aboveWeight - 上方货物重量(kg)
+   * @param {Array} placedItems - 已放置货物列表
+   * @returns {boolean}
+   */
+  function checkWeightBearing(x, y, z, l, w, aboveWeight, placedItems) {
+    if (z <= CONSTANTS.EPS) return true; // 地板支撑，通过
+
+    // 找直接下方物品（顶面正好在候选 z 高度，且 XY 投影有交集）
+    let belowTotalWeight = 0;
+    for (const p of placedItems) {
+      if (Math.abs(p.z + p.h - z) > CONSTANTS.EPS) continue;
+      const ox = Math.max(x, p.x);
+      const oy = Math.max(y, p.y);
+      const ox2 = Math.min(x + l, p.x + p.l);
+      const oy2 = Math.min(y + w, p.y + p.w);
+      if (ox < ox2 - CONSTANTS.EPS && oy < oy2 - CONSTANTS.EPS) {
+        // 有交集的下方物品，累加其重量
+        belowTotalWeight += p.weight;
+      }
+    }
+
+    return belowTotalWeight >= aboveWeight * CONSTANTS.SUPPORT_WEIGHT_RATIO;
+  }
+
+  /**
    * 寻找最佳放置位置（遍历所有EMS空间和方向）
    * @returns {{spaceIndex, orientation, x, y, z}|null}
    */
@@ -369,6 +409,12 @@ const PackingEngine = (() => {
           support = calcSupportRatio(space.x, space.y, space.z, o.l, o.w, placedItems);
           const cornersOk = hasCornerSupport(space.x, space.y, space.z, o.l, o.w, placedItems);
           if (support < minSupport || !cornersOk) continue;
+
+          // 承重检查：下方物品必须能支撑上方重量
+          // 防止6200kg发电机压在12kg纸箱上这类物理荒谬场景
+          if (!checkWeightBearing(space.x, space.y, space.z, o.l, o.w, item.weight, placedItems)) {
+            continue;
+          }
         }
 
         // FR 框架柜：任意层（含 z=0）货物底面必须与地板有交集
@@ -643,7 +689,7 @@ const PackingEngine = (() => {
    */
   function packSingleContainer(cargoItems, container, options = {}) {
     const tolerance = options.tolerance || 0.05;
-    const sortStrategy = options.sortStrategy || 'volume-desc';
+    const sortStrategy = options.sortStrategy || 'smart';
 
     const effDims = getEffectiveMaxDims(container, tolerance);
 
@@ -778,11 +824,12 @@ const PackingEngine = (() => {
     let totalVolumePlaced = 0;
     let totalWeightLoaded = 0;
     let totalPlaced = 0;
+    // 自适应策略：连续多箱被不可叠碎片化时自动切换排序
+    let useStackableFirst = false;
 
     for (let ci = 0; ci < containerSpecs.length; ci++) {
       const spec = containerSpecs[ci];
       if (remaining.length === 0) {
-        // 所有货物已在之前的箱型中装完，后续箱型不再需要
         for (let sj = ci; sj < containerSpecs.length; sj++) {
           skippedContainers.push({
             code: containerSpecs[sj].code,
@@ -793,7 +840,11 @@ const PackingEngine = (() => {
         break;
       }
 
-      const result = packSingleContainer(remaining, spec, options);
+      // 自适应策略选择
+      const boxOptions = { ...options };
+      if (useStackableFirst) boxOptions.sortStrategy = 'stackable-first';
+
+      const result = packSingleContainer(remaining, spec, boxOptions);
       containers.push({
         ...result,
         containerCode: spec.code || result.containerCode || 'UNKNOWN',
@@ -815,7 +866,8 @@ const PackingEngine = (() => {
       totalVolumePlaced += result.totalVolume;
       totalWeightLoaded += result.totalWeight;
 
-      remaining = result.unplacedItems.map(u => ({
+      // 先计算新 remaining，再用旧 remaining 做自适应判断
+      const newRemaining = result.unplacedItems.map(u => ({
         model: u.model,
         l: u.l || u.origL,
         w: u.w || u.origW,
@@ -825,6 +877,21 @@ const PackingEngine = (() => {
         orientationFixed: false,
         colorIndex: u.colorIndex || 0
       }));
+
+      // 自适应检测：当前箱利用率 < 20% 且全是不可叠货 → 下一箱切换 stackable-first
+      const hadStackableBefore = remaining.some(i => i.stackable !== false);
+      const hasStackableAfter = newRemaining.some(i => i.stackable !== false);
+      const allPlacedAreNonStackable = result.placedItems.length > 0 &&
+        result.placedItems.every(p => p.stackable === false);
+
+      if (result.utilization < 0.2 && allPlacedAreNonStackable && hadStackableBefore) {
+        useStackableFirst = true;
+      } else if (useStackableFirst && !hasStackableAfter) {
+        // 仅当剩余货物中不再有可叠货时才退出 stackable-first 模式
+        useStackableFirst = false;
+      }
+
+      remaining = newRemaining;
     }
 
     // 过滤空箱（未装入任何货物的箱型）
@@ -1120,11 +1187,49 @@ const PackingEngine = (() => {
 
   function sortItems(items, strategy) {
     return items.sort((a, b) => {
-      // 不可叠放优先（放在底层）
+      // ── smart 策略：三级分组，解决异构混装碎片化问题 ──
+      // 层1: 重型不可叠（需独占连续地板空间）→ 最先装
+      // 层2: 可叠货物（填隙、叠高）→ 第二梯队
+      // 层3: 轻型不可叠（可放在可叠货物上方）→ 最后装
+      if (strategy === 'smart') {
+        const tier = (item) => {
+          if (item.stackable === false) {
+            const maxDim = Math.max(item.l, item.w, item.h);
+            if (item.weight >= CONSTANTS.HEAVY_NONSTACKABLE_WEIGHT ||
+                maxDim >= CONSTANTS.HEAVY_NONSTACKABLE_MIN_DIM) {
+              return 1; // 重型不可叠，需地板
+            }
+            return 3; // 轻型不可叠，可放顶层
+          }
+          return 2; // 可叠
+        };
+        const ta = tier(a), tb = tier(b);
+        if (ta !== tb) return ta - tb;
+        // 同层内体积降序
+        return (b.l * b.w * b.h) - (a.l * a.w * a.h);
+      }
+
+      // ── stackable-first 策略：可叠优先（低利用率箱的兜底策略）──
+      // 当上一箱空间被不可叠货物碎片化后，下一箱优先堆叠可叠货
+      if (strategy === 'stackable-first') {
+        const tier = (item) => {
+          if (item.stackable !== false) return 1; // 可叠优先
+          const maxDim = Math.max(item.l, item.w, item.h);
+          if (item.weight >= CONSTANTS.HEAVY_NONSTACKABLE_WEIGHT ||
+              maxDim >= CONSTANTS.HEAVY_NONSTACKABLE_MIN_DIM) {
+            return 2; // 重型不可叠第二
+          }
+          return 3; // 轻型不可叠最后
+        };
+        const ta = tier(a), tb = tier(b);
+        if (ta !== tb) return ta - tb;
+        return (b.l * b.w * b.h) - (a.l * a.w * a.h);
+      }
+
+      // ── 原有策略：不可叠优先 → 体积/重量降序 ──
       if ((a.stackable === false) !== (b.stackable === false)) {
         return a.stackable === false ? -1 : 1;
       }
-      // 按策略
       if (strategy === 'weight-desc') {
         return b.weight - a.weight || (b.l * b.w * b.h) - (a.l * a.w * a.h);
       }
@@ -1188,33 +1293,68 @@ const PackingEngine = (() => {
     const autoRetry = options.autoRetry !== false;
     const mixedContainers = options.mixedContainers;
 
-    // 混合装箱模式：按指定箱型顺序装填
+    // 混合装箱模式：使用 Planner 分配层进行全局分组分配
     if (mixedContainers && mixedContainers.length > 0) {
-      let result = mixedMultiContainerPack(items, mixedContainers, { tolerance, sortStrategy: 'volume-desc' });
+      const planner = window.Planner;
+      const plan = planner.planContainerAssignment(items, mixedContainers);
 
-      // 自检所有箱（每个箱用各自的箱型规格，按 code 查找 → index 兜底 → 首个规格兜底）
-      let allChecks = result.containers.map((c, idx) => {
-        const spec = mixedContainers.find(s => s.code === c.containerCode)
-          || mixedContainers[idx]
-          || mixedContainers[0];
+      // 如果 Planner 没有产生任何分配，回退到原始贪心法
+      if (plan.assignments.length === 0) {
+        let result = mixedMultiContainerPack(items, mixedContainers, { tolerance, sortStrategy: 'smart' });
+        let allChecks = result.containers.map((c, idx) => {
+          const spec = mixedContainers.find(s => s.code === c.containerCode) || mixedContainers[idx] || mixedContainers[0];
+          return selfCheck(c, spec, tolerance);
+        });
+        result.checks = allChecks;
+        result.hasErrors = allChecks.some(c => c.errors.length > 0);
+        result.hasWarnings = allChecks.some(c => c.warnings.length > 0);
+        result.plannerFallback = true;
+        return result;
+      }
+
+      // 逐组调用 Packer 试装
+      const containers = [];
+      for (const assignment of plan.assignments) {
+        const spec = mixedContainers.find(s => s.code === assignment.containerCode);
+        if (!spec) continue;
+
+        const packResult = packSingleContainer(assignment.items, spec, {
+          tolerance,
+          sortStrategy: 'smart'
+        });
+
+        containers.push({
+          ...packResult,
+          containerCode: spec.code,
+          containerName: spec.nameCN || spec.name || '未知箱型',
+          plannerReason: assignment.reason
+        });
+      }
+
+      let result = {
+        containerCode: 'mixed',
+        containerName: '混合箱型（Planner分配）',
+        containers,
+        containerCount: containers.length,
+        totalPlaced: containers.reduce((s, c) => s + c.placedItems.length, 0),
+        totalItems: containers.reduce((s, c) => s + c.placedItems.length + c.unplacedItems.length, 0),
+        unplacedCount: containers.reduce((s, c) => s + c.unplacedItems.length, 0),
+        unplacedItems: [],
+        avgUtilization: containers.length > 0
+          ? containers.reduce((s, c) => s + c.utilization, 0) / containers.length
+          : 0,
+        totalVolumePlaced: containers.reduce((s, c) => s + (c.totalVolume || 0), 0),
+        totalWeightLoaded: containers.reduce((s, c) => s + (c.totalWeight || 0), 0),
+        maxPayload: mixedContainers.reduce((s, spec) => s + spec.payload, 0)
+      };
+
+      // 自检所有箱
+      let allChecks = result.containers.map(c => {
+        const spec = mixedContainers.find(s => s.code === c.containerCode);
         return selfCheck(c, spec, tolerance);
       });
 
-      // selfCheck → recalibrate 闭环：若有 suggestRecalc 警告，换排序策略重算
-      if (autoRetry) {
-        const hasRecalcWarning = allChecks.some(c => c.warnings.some(w => w.suggestRecalc));
-        if (hasRecalcWarning) {
-          result = mixedMultiContainerPack(items, mixedContainers, { tolerance, sortStrategy: 'weight-desc' });
-          allChecks = result.containers.map((c, idx) => {
-            const spec = mixedContainers.find(s => s.code === c.containerCode)
-              || mixedContainers[idx]
-              || mixedContainers[0];
-            return selfCheck(c, spec, tolerance);
-          });
-          result.recalculated = true;
-        }
-      }
-
+      // Planner 路径不自动回退贪心法 — Planner 分配是有意为之的
       result.checks = allChecks;
       result.hasErrors = allChecks.some(c => c.errors.length > 0);
       result.hasWarnings = allChecks.some(c => c.warnings.length > 0);
@@ -1233,7 +1373,7 @@ const PackingEngine = (() => {
     }
 
     // 多箱分配
-    let result = multiContainerPack(items, containerSpec, { tolerance, sortStrategy: 'volume-desc' });
+    let result = multiContainerPack(items, containerSpec, { tolerance, sortStrategy: 'smart' });
 
     // 自检所有箱
     const allChecks = result.containers.map(c => selfCheck(c, containerSpec, tolerance));
@@ -1265,7 +1405,7 @@ const PackingEngine = (() => {
     expandItems,
     getTotalQuantity,
     // 暴露内部函数供测试
-    _internal: { createSpace, cutSpace, mergeSpaces, dblScore, emsPlace, layerPack, detectOverlaps, sortItems, groupByModel, calcSupportRatio, hasCornerSupport, baseOverlapsContainerFloor }
+    _internal: { createSpace, cutSpace, mergeSpaces, dblScore, emsPlace, layerPack, detectOverlaps, sortItems, groupByModel, calcSupportRatio, hasCornerSupport, baseOverlapsContainerFloor, checkWeightBearing }
   };
 })();
 
