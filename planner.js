@@ -226,7 +226,55 @@ const Planner = (() => {
       });
     }
 
-    // Step 5-6 待实现...
+    // Step 5: 轻型不可叠 — 独立开箱（不与其他重型货混装，避免 blockedAbove 碎片化）
+    let lightGroup = null;
+    for (let i = 0; i < lightNonStack.length; i++) {
+      const item = lightNonStack[i];
+      const itemVol = item.l * item.w * item.h;
+
+      if (!lightGroup) {
+        for (const c of standardContainers) {
+          if (itemVol <= c.L * c.W * c.H * VOLUME_FACTOR) {
+            lightGroup = {
+              container: c,
+              items: [],
+              totalVolume: 0,
+              totalWeight: 0
+            };
+            break;
+          }
+        }
+      }
+
+      if (lightGroup) {
+        const maxVol = lightGroup.container.L * lightGroup.container.W * lightGroup.container.H * VOLUME_FACTOR;
+        if (lightGroup.totalVolume + itemVol > maxVol ||
+            lightGroup.totalWeight + item.weight > lightGroup.container.payload) {
+          assignments.push({
+            containerCode: lightGroup.container.code,
+            items: lightGroup.items,
+            reason: `轻型不可叠分组，${lightGroup.items.length}件`
+          });
+          lightGroup = null;
+          i--;
+          continue;
+        }
+        lightGroup.items.push(item);
+        lightGroup.totalVolume += itemVol;
+        lightGroup.totalWeight += item.weight;
+      } else {
+        unassigned.push(item);
+      }
+    }
+
+    if (lightGroup && lightGroup.items.length > 0) {
+      assignments.push({
+        containerCode: lightGroup.container.code,
+        items: lightGroup.items,
+        reason: `轻型不可叠分组，${lightGroup.items.length}件`
+      });
+    }
+
     return { assignments, unassigned };
   }
 
