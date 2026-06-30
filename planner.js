@@ -69,7 +69,62 @@ const Planner = (() => {
     });
   }
 
-  return { classifyItem, filterContainerTypes };
+  /**
+   * 全局分配货物到集装箱
+   * @param {Array} allItems - [{model,l,w,h,weight,quantity,stackable}]
+   * @param {Array} containerSpecs - 可用箱型规格
+   * @returns {{ assignments: [{containerCode,items:[],reason}], unassigned:[] }}
+   */
+  function planContainerAssignment(allItems, containerSpecs) {
+    // Step 1: 货物分类（展开 quantity）
+    const oversizeItems = [];
+    const heavyNonStack = [];
+    const stackableItems = [];
+    const lightNonStack = [];
+
+    for (const item of allItems) {
+      const qty = item.quantity || 1;
+      for (let i = 0; i < qty; i++) {
+        const single = { ...item, quantity: 1 };
+        const cls = classifyItem(single);
+        if (cls === 'oversize') oversizeItems.push(single);
+        else if (cls === 'heavy-nonstack') heavyNonStack.push(single);
+        else if (cls === 'stackable') stackableItems.push(single);
+        else lightNonStack.push(single);
+      }
+    }
+
+    const assignments = [];
+    const unassigned = [];
+
+    // Step 2: 超限货分配 — 每件独占一个适合的最小 FR/OT
+    for (const item of oversizeItems) {
+      const usableTypes = filterContainerTypes(item);
+      const frTypes = usableTypes.filter(t => t.type === 'flatRack');
+      const otTypes = usableTypes.filter(t => t.type === 'openTop');
+      const candidates = [...frTypes, ...otTypes];
+
+      if (candidates.length === 0) {
+        unassigned.push(item);
+        continue;
+      }
+
+      // 选体积最小的
+      candidates.sort((a, b) => (a.L * a.W * a.H) - (b.L * b.W * b.H));
+      const chosen = candidates[0];
+
+      assignments.push({
+        containerCode: chosen.code,
+        items: [item],
+        reason: `超限货独占 ${chosen.code}`
+      });
+    }
+
+    // Step 3-6 待实现...
+    return { assignments, unassigned };
+  }
+
+  return { classifyItem, filterContainerTypes, planContainerAssignment };
 })();
 
 window.Planner = Planner;

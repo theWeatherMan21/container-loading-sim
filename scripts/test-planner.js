@@ -85,4 +85,18 @@ const aluTypes = filterContainerTypes(aluIngot);
 assert(aluTypes.some(t => t.code === '20GP'), 'Alu-Ingot: 20GP should be available for single item');
 
 console.log(`  filterContainerTypes: ${pass}/${pass+fail} total passed`);
+
+// ── Test 11: planContainerAssignment — 超限货独占 FR ──
+
+const { planContainerAssignment } = dom.window.Planner;
+
+const transItem = { model: 'Transformer', l: 2.80, w: 1.60, h: 2.40, weight: 8500, stackable: false, quantity: 2 };
+const result1 = planContainerAssignment([transItem], Object.values(CDB.CONTAINER_DB));
+assert(result1.assignments.length === 2,
+  `Transformer(qty=2): should get 2 containers, got ${result1.assignments.length}`);
+assert(result1.assignments.every(a => a.containerCode === '20FR'),
+  `Transformer(2.80×1.60): should use 20FR (smallest usable flatRack), got ${result1.assignments.map(a => a.containerCode)}`);
+assert(result1.unassigned.length === 0, 'Transformer: no unassigned items');
+
+console.log(`  planContainerAssignment (oversize): ${pass}/${pass+fail} total passed`);
 if (fail > 0) process.exit(1);
