@@ -21,6 +21,7 @@ global.navigator = dom.window.navigator;
 const scripts = [
   'container-db.js',
   'field-parser.js',
+  'planner.js',
   'packing-engine.js'
 ];
 
