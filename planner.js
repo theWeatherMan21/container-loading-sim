@@ -44,7 +44,32 @@ const Planner = (() => {
     return false;
   }
 
-  return { classifyItem };
+  /**
+   * 为一件货物筛选所有能装下它的箱型
+   * @param {object} item
+   * @returns {Array} 可用箱型规格列表
+   */
+  function filterContainerTypes(item) {
+    const allTypes = Object.values(CONTAINER_DB);
+
+    return allTypes.filter(container => {
+      // 尺寸硬约束
+      const sizeCheck = CDB.checkSizeConstraints(item, container, 0.01);
+      if (!sizeCheck.pass) return false;
+
+      // 门约束
+      const doorCheck = CDB.checkDoorConstraint(item, container, 0.01);
+      if (!doorCheck.pass) return false;
+
+      // 载重约束（单件不能超过箱型载重）
+      const weightCheck = CDB.checkWeightConstraint(0, item.weight, container);
+      if (!weightCheck.pass) return false;
+
+      return true;
+    });
+  }
+
+  return { classifyItem, filterContainerTypes };
 })();
 
 window.Planner = Planner;

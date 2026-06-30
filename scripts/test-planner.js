@@ -55,5 +55,34 @@ assert(classifyItem(carton) === 'stackable', 'Carton should be stackable');
 const steelBeam = { model: 'Steel-Beam', l: 3.80, w: 0.50, h: 0.45, weight: 3200, stackable: false, quantity: 1 };
 assert(classifyItem(steelBeam) === 'heavy-nonstack', 'Steel-Beam should be heavy-nonstack: maxDim 3.80 >= 2.0');
 
-console.log(`\nclassifyItem: ${pass}/${pass+fail} passed`);
+console.log(`  classifyItem: ${pass}/${pass+fail} passed`);
+
+// ── Test 7-10: filterContainerTypes ──
+
+const { filterContainerTypes } = dom.window.Planner;
+
+// Test 7: 纸箱 — 所有标准箱型都可用
+const cartonTypes = filterContainerTypes(carton);
+assert(cartonTypes.length >= 6, 'Carton: should have at least 6 usable container types');
+assert(cartonTypes.some(t => t.code === '20GP'), 'Carton: 20GP should be available');
+assert(cartonTypes.some(t => t.code === '40HQ'), 'Carton: 40HQ should be available');
+
+// Test 8: 变压器 2.80×1.60×2.40 — FR 可用, 20GP 小门应被排除
+const transTypes = filterContainerTypes(transformer);
+assert(transTypes.length > 0, 'Transformer: should have at least 1 usable type');
+assert(transTypes.some(t => t.type === 'flatRack'), 'Transformer: FR should be available');
+// 20GP 门高仅 2.28m，2.40m 高的变压器无法通过
+assert(!transTypes.some(t => t.code === '20GP'),
+  'Transformer(2.40m tall) should NOT fit through 20GP door(2.28m)');
+
+// Test 9: 钢构梁 3.80m — 检查门约束
+const beamTypes = filterContainerTypes(steelBeam);
+assert(beamTypes.some(t => t.code === '40HQ'),
+  'Steel-Beam(3.80m) should fit 40HQ through door (cross-section 0.50×0.45)');
+
+// Test 10: 铝锭 1.10×1.10×0.70, 2850kg — 载重约束
+const aluTypes = filterContainerTypes(aluIngot);
+assert(aluTypes.some(t => t.code === '20GP'), 'Alu-Ingot: 20GP should be available for single item');
+
+console.log(`  filterContainerTypes: ${pass}/${pass+fail} total passed`);
 if (fail > 0) process.exit(1);
