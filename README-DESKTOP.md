@@ -59,19 +59,43 @@ npx tauri dev
 
 如需完全避免此提示，需要购买 Windows 代码签名证书。
 
-## Windows 端（保留）
+## Windows x86_64 版本（推荐）
 
-在 Windows 环境或交叉编译环境中执行：
+当前开发机是 macOS ARM，不能在本机直接产出可运行的 Windows `.exe`：Tauri 的 Windows MSVC 链接器和 WebView2 打包环境需要 Windows runner。项目已提供 GitHub Actions 工作流，可在 Windows CI 上稳定构建 x86_64 安装包。
+
+### 构建方式
+
+1. 将当前代码提交并推送到 GitHub。
+2. 打开仓库的 **Actions → Build Windows x86 Installer**。
+3. 点击 **Run workflow**。
+4. 构建完成后，从 workflow 的 **Artifacts** 下载 `windows-x86_64-installer`。
+5. 其中 `nsis/*.exe` 是推荐的安装包；`msi/*.msi` 是企业部署格式。
+
+也可以推送版本标签触发构建并自动附加到 GitHub Release：
 
 ```bash
+git tag v1.1.1
+git push origin v1.1.1
+```
+
+对应工作流文件：`.github/workflows/windows-x86.yml`。
+
+### 本地 Windows 构建命令
+
+在 Windows x86_64 或 x64 机器上执行：
+
+```powershell
+npm ci
 rustup target add x86_64-pc-windows-msvc
 npx tauri build --target x86_64-pc-windows-msvc
 ```
 
-产物：
+产物位于：
 
-- `src-tauri/target/release/bundle/nsis/*.exe`
-- `src-tauri/target/release/bundle/msi/*.msi`
+- `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe`
+- `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi`
+
+> 这里的“x86版本”按 Windows 常见命名约定解释为 `x86_64`（64位 Intel/AMD）。如果你实际需要 32位 Windows，则目标应改为 `i686-pc-windows-msvc`，但 Tauri 2/WebView2 生态和依赖兼容性会明显更差，需要单独验证。
 
 ## 文件结构
 

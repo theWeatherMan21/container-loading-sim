@@ -63,6 +63,7 @@ function downloadFile(url, dest) {
     'app.js',
     'field-parser.js',
     'container-db.js',
+    'planner.js',
     'packing-engine.js',
     'three-viewer.js',
     'pdf-exporter.js',
