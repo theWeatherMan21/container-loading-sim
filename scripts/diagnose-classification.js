@@ -1,26 +1,21 @@
 /**
  * 诊断脚本 #1 — 货物分类 + 推荐链路分析
  */
-const { JSDOM } = require('jsdom');
+const vm = require('vm');
 const fs = require('fs');
 const path = require('path');
 
-const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
-  url: 'http://localhost', runScripts: 'dangerously'
-});
-global.window = dom.window;
-global.document = dom.window.document;
-global.navigator = dom.window.navigator;
+// vm 沙箱加载（替代 JSDOM，兼容 Node 20+ / 23）
+const context = { console, window: {}, setTimeout, clearTimeout };
+context.window = context;
+vm.createContext(context);
 
 // 手动注入脚本
 for (const script of ['container-db.js', 'field-parser.js', 'packing-engine.js']) {
-  const code = fs.readFileSync(path.join(__dirname, '..', script), 'utf-8');
-  const el = dom.window.document.createElement('script');
-  el.textContent = code;
-  dom.window.document.body.appendChild(el);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', script), 'utf8'), context, { filename: script });
 }
 
-const CDB = dom.window.ContainerDB;
+const CDB = context.window.ContainerDB;
 
 function main() {
   const testCargo = [
@@ -49,7 +44,7 @@ function main() {
 
   // ── 2. fitsByRotation 矩阵 ──
   console.log('\n── 2. 每种货物 vs 每种箱型的 fitsByRotation ──\n');
-  const containerTypes = ['20GP', '40GP', '40HQ', '45HQ', '20OT', '40OT', '20RF', '40RF', '40HRF', '20FR', '40FR', '20PF', '40PF'];
+  const containerTypes = ['20GP', '40HQ', '45HQ', '20OT', '40OT', '20FR', '40FR'];
 
   let header = pad('  货物', 26);
   for (const ct of containerTypes) header += pad(ct, 7);
@@ -133,7 +128,7 @@ function main() {
 
   // ── 7. 推荐引擎对比 ──
   console.log('\n── 7. 不同箱型的单箱型推荐对比 ──\n');
-  for (const ct of ['20GP', '40GP', '40HQ', '45HQ']) {
+  for (const ct of ['20GP', '40HQ', '45HQ']) {
     const spec = CDB.CONTAINER_DB[ct];
     const vol = spec.volume;
     const payload = spec.payload;

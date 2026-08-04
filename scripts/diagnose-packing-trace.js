@@ -1,26 +1,11 @@
 /**
  * 诊断脚本 #2 — 装箱过程逐件追踪
  */
-const { JSDOM } = require('jsdom');
-const fs = require('fs');
-const path = require('path');
+const { createRuntime } = require('./_load-runtime');
+const ctx = createRuntime(['container-db.js', 'field-parser.js', 'packing-engine.js']);
 
-const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
-  url: 'http://localhost', runScripts: 'dangerously'
-});
-global.window = dom.window;
-global.document = dom.window.document;
-global.navigator = dom.window.navigator;
-
-for (const script of ['container-db.js', 'field-parser.js', 'packing-engine.js']) {
-  const code = fs.readFileSync(path.join(__dirname, '..', script), 'utf-8');
-  const el = dom.window.document.createElement('script');
-  el.textContent = code;
-  dom.window.document.body.appendChild(el);
-}
-
-const PE = dom.window.PackingEngine;
-const CDB = dom.window.ContainerDB;
+const PE = ctx.window.PackingEngine;
+const CDB = ctx.window.ContainerDB;
 const pad = (s, n) => String(s).padEnd(n);
 
 const testCargo = [

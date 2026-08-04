@@ -1,26 +1,11 @@
 /**
  * 诊断脚本 #3 — EMS 空间碎片化可视化分析
  */
-const { JSDOM } = require('jsdom');
-const fs = require('fs');
-const path = require('path');
+const { createRuntime } = require('./_load-runtime');
+const ctx = createRuntime(['container-db.js', 'field-parser.js', 'packing-engine.js']);
 
-const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
-  url: 'http://localhost', runScripts: 'dangerously'
-});
-global.window = dom.window;
-global.document = dom.window.document;
-global.navigator = dom.window.navigator;
-
-for (const script of ['container-db.js', 'field-parser.js', 'packing-engine.js']) {
-  const code = fs.readFileSync(path.join(__dirname, '..', script), 'utf-8');
-  const el = dom.window.document.createElement('script');
-  el.textContent = code;
-  dom.window.document.body.appendChild(el);
-}
-
-const _internal = dom.window.PackingEngine._internal;
-const CDB = dom.window.ContainerDB;
+const _internal = ctx.window.PackingEngine._internal;
+const CDB = ctx.window.ContainerDB;
 
 function main() {
   const hq45 = CDB.CONTAINER_DB['45HQ'];

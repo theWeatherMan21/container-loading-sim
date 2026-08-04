@@ -4,26 +4,21 @@
  * 用法: node scripts/test-full-mixed-report.js
  */
 
-const { JSDOM } = require('jsdom');
+const vm = require('vm');
 const fs = require('fs');
 const path = require('path');
 
-const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
-  url: 'http://localhost', runScripts: 'dangerously'
-});
-global.window = dom.window;
-global.document = dom.window.document;
-global.navigator = dom.window.navigator;
+// vm 沙箱加载（替代 JSDOM，兼容 Node 20+ / 23）
+const context = { console, window: {}, setTimeout, clearTimeout };
+context.window = context;
+vm.createContext(context);
 
 for (const script of ['container-db.js', 'field-parser.js', 'packing-engine.js']) {
-  const code = fs.readFileSync(path.join(__dirname, '..', script), 'utf-8');
-  const el = dom.window.document.createElement('script');
-  el.textContent = code;
-  dom.window.document.body.appendChild(el);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', script), 'utf8'), context, { filename: script });
 }
 
-const CDB = dom.window.ContainerDB;
-const PE = dom.window.PackingEngine;
+const CDB = context.window.ContainerDB;
+const PE = context.window.PackingEngine;
 
 // ═══════════════════════════════════════════
 // 测试数据集：7 种不同特征货物
@@ -133,7 +128,7 @@ line(`└─$ {'─'.repeat(14)}┴─$ {'─'.repeat(8)}┴─$ {'─'.repeat(2
 
 // ═══ Section 2: Container Specifications ═══
 section('二、可用集装箱规格');
-const allTypes = ['20GP','40GP','40HQ','45HQ','20OT','40OT','20RF','40RF','40HRF','20FR','40FR','20PF','40PF'];
+const allTypes = ['20GP','40HQ','45HQ','20OT','40OT','20FR','40FR'];
 line(`┌─$ {'─'.repeat(6)}┬─$ {'─'.repeat(12)}┬─$ {'─'.repeat(20)}┬─$ {'─'.repeat(10)}┬─$ {'─'.repeat(12)}┬─$ {'─'.repeat(10)}┐`);
 line(`│ ${pad('代码', 6)}│ ${pad('名称', 12)}│ ${pad('内尺寸(m)', 20)}│ ${pad('门(m)', 10)}│ ${pad('载重(kg)', 12)}│ ${pad('类型', 10)}│`);
 line(`├─$ {'─'.repeat(6)}┼─$ {'─'.repeat(12)}┼─$ {'─'.repeat(20)}┼─$ {'─'.repeat(10)}┼─$ {'─'.repeat(12)}┼─$ {'─'.repeat(10)}┤`);
@@ -180,7 +175,6 @@ section('四、逐箱型装载测试');
 const containerTests = [
   { code: '20GP', label: '20GP 标准柜' },
   { code: '40HQ', label: '40HQ 高柜' },
-  { code: '40GP', label: '40GP 标准柜' },
   { code: '45HQ', label: '45HQ 超高柜' },
 ];
 

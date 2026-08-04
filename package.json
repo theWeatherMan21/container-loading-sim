@@ -14,7 +14,7 @@
     "build": "tauri build",
     "build:mac": "tauri build --target aarch64-apple-darwin",
     "build:win": "tauri build --target x86_64-pc-windows-msvc",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node scripts/test-all.js"
   },
   "keywords": [],
   "author": "",

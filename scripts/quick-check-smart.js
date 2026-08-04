@@ -1,24 +1,11 @@
 /**
  * 快速验证 smart 策略效果
  */
-const { JSDOM } = require('jsdom');
-const fs = require('fs');
-const path = require('path');
+const { createRuntime } = require('./_load-runtime');
+const ctx = createRuntime(['container-db.js', 'field-parser.js', 'packing-engine.js']);
 
-const dom = new JSDOM('<html><body></body></html>', { url: 'http://localhost', runScripts: 'dangerously' });
-global.window = dom.window;
-global.document = dom.window.document;
-global.navigator = dom.window.navigator;
-
-for (const s of ['container-db.js', 'field-parser.js', 'packing-engine.js']) {
-  const c = fs.readFileSync(path.join(__dirname, '..', s), 'utf-8');
-  const el = dom.window.document.createElement('script');
-  el.textContent = c;
-  dom.window.document.body.appendChild(el);
-}
-
-const PE = dom.window.PackingEngine;
-const CDB = dom.window.ContainerDB;
+const PE = ctx.window.PackingEngine;
+const CDB = ctx.window.ContainerDB;
 const pad = (s, n) => String(s).padEnd(n);
 
 const cargo = [

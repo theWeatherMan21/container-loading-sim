@@ -11,24 +11,21 @@
  * 用法: node scripts/test-comprehensive-report.js > test-reports/YYYY-MM-DD-report.md
  */
 
-const { JSDOM } = require('jsdom');
+const vm = require('vm');
 const fs = require('fs');
 const path = require('path');
 
-const dom = new JSDOM('<html><body></body></html>', { url: 'http://localhost', runScripts: 'dangerously' });
-global.window = dom.window;
-global.document = dom.window.document;
-global.navigator = dom.window.navigator;
+// vm 沙箱加载（替代 JSDOM，兼容 Node 20+ / 23）
+const context = { console, window: {}, setTimeout, clearTimeout };
+context.window = context;
+vm.createContext(context);
 
 for (const s of ['container-db.js', 'field-parser.js', 'packing-engine.js']) {
-  const c = fs.readFileSync(path.join(__dirname, '..', s), 'utf-8');
-  const el = dom.window.document.createElement('script');
-  el.textContent = c;
-  dom.window.document.body.appendChild(el);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', s), 'utf8'), context, { filename: s });
 }
 
-const CDB = dom.window.ContainerDB;
-const PE = dom.window.PackingEngine;
+const CDB = context.window.ContainerDB;
+const PE = context.window.PackingEngine;
 
 // ══════════════════════════════════════════════════════════════
 // 测试货物数据 — 8 种典型工业货物
@@ -314,7 +311,7 @@ br();
 // ══════════════════════════════════════════════════════════════
 h2('二、可用集装箱规格');
 
-const allTypes = ['20GP', '40GP', '40HQ', '45HQ', '20OT', '40OT', '20RF', '40RF', '40HRF', '20FR', '40FR', '20PF', '40PF'];
+const allTypes = ['20GP', '40HQ', '45HQ', '20OT', '40OT', '20FR', '40FR'];
 const ctRows = [];
 for (const code of allTypes) {
   const s = CDB.CONTAINER_DB[code];
@@ -656,7 +653,7 @@ const realScenarios = [
     name: '场景B: 冷链食品混批',
     desc: '冷冻肉类 + 消费电子 + 少量建材。模拟冷链与非冷链混装（实际应分箱）。',
     items: CARGO.filter(c => ['Frozen-Meat-Pallet', 'Cardboard-Consumer-Electronics', 'Ceramic-Tile-Pallet'].includes(c.model)),
-    recommended: CDB.CONTAINER_DB['20RF'],
+    recommended: CDB.CONTAINER_DB['40HQ'],
     actual: null,
   },
   {

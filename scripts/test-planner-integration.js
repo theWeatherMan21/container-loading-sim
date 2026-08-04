@@ -3,37 +3,27 @@
 
 const fs = require('fs');
 const path = require('path');
-const { JSDOM } = require('jsdom');
+const vm = require('vm');
 
-const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
-  url: 'http://localhost',
-  runScripts: 'dangerously'
-});
-global.window = dom.window;
+// vm 沙箱加载（替代 JSDOM，兼容 Node 20+ / 23）
+const context = { console, window: {}, setTimeout, clearTimeout };
+context.window = context;
+vm.createContext(context);
+for (const f of ['container-db.js', 'planner.js']) {
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), context, { filename: f });
+}
 
-// 注入 container-db（Planner 依赖 CDB 的约束函数）
-const cdbCode = fs.readFileSync(path.join(__dirname, '..', 'container-db.js'), 'utf-8');
-const cdbEl = dom.window.document.createElement('script');
-cdbEl.textContent = cdbCode;
-dom.window.document.body.appendChild(cdbEl);
-
-// 注入 planner
-const plannerCode = fs.readFileSync(path.join(__dirname, '..', 'planner.js'), 'utf-8');
-const plannerEl = dom.window.document.createElement('script');
-plannerEl.textContent = plannerCode;
-dom.window.document.body.appendChild(plannerEl);
-
-const { classifyItem } = dom.window.Planner;
-const CDB = dom.window.ContainerDB;
+const { classifyItem } = context.window.Planner;
+const CDB = context.window.ContainerDB;
 
 let pass = 0, fail = 0;
 const assert = (cond, msg) => { if (cond) pass++; else { fail++; console.error('  FAIL:', msg); } };
 
 // ── Test 1-6: classifyItem ──
 
-// Test 1: 超限货 — 变压器 2.80×1.60×2.40 超40HQ门高(2.34m)
-const transformer = { model: 'Transformer', l: 2.80, w: 1.60, h: 2.40, weight: 8500, stackable: false, quantity: 1 };
-assert(classifyItem(transformer) === 'oversize', 'Transformer should be oversize: height 2.40 > door height');
+// Test 1: 超限货 — 变压器 3.20×2.50×2.40 宽度超40HQ门宽(2.34m)
+const transformer = { model: 'Transformer', l: 3.20, w: 2.50, h: 2.40, weight: 8500, stackable: false, quantity: 1 };
+assert(classifyItem(transformer) === 'oversize', 'Transformer should be oversize: width 2.50 > door width');
 
 // Test 2: 重型不可叠 — 铝锭 1.10×1.10×0.70, 2850kg, 不可叠
 const aluIngot = { model: 'Alu-Ingot', l: 1.10, w: 1.10, h: 0.70, weight: 2850, stackable: false, quantity: 1 };
@@ -59,7 +49,7 @@ console.log(`  classifyItem: ${pass}/${pass+fail} passed`);
 
 // ── Test 7-10: filterContainerTypes ──
 
-const { filterContainerTypes } = dom.window.Planner;
+const { filterContainerTypes } = context.window.Planner;
 
 // Test 7: 纸箱 — 所有标准箱型都可用
 const cartonTypes = filterContainerTypes(carton);
@@ -88,9 +78,9 @@ console.log(`  filterContainerTypes: ${pass}/${pass+fail} total passed`);
 
 // ── Test 11: planContainerAssignment — 超限货独占 FR ──
 
-const { planContainerAssignment } = dom.window.Planner;
+const { planContainerAssignment } = context.window.Planner;
 
-const transItem = { model: 'Transformer', l: 2.80, w: 1.60, h: 2.40, weight: 8500, stackable: false, quantity: 2 };
+const transItem = { model: 'Transformer', l: 3.20, w: 2.50, h: 2.40, weight: 8500, stackable: false, quantity: 2 };
 const result1 = planContainerAssignment([transItem], Object.values(CDB.CONTAINER_DB));
 assert(result1.assignments.length === 2,
   `Transformer(qty=2): should get 2 containers, got ${result1.assignments.length}`);
@@ -128,12 +118,9 @@ console.log(`  planContainerAssignment (heavy+stackable): ${pass}/${pass+fail} t
 
 // ── 注入 packing-engine ──
 
-const peCode = fs.readFileSync(path.join(__dirname, '..', 'packing-engine.js'), 'utf-8');
-const peEl = dom.window.document.createElement('script');
-peEl.textContent = peCode;
-dom.window.document.body.appendChild(peEl);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'packing-engine.js'), 'utf8'), context, { filename: 'packing-engine.js' });
 
-const PE = dom.window.PackingEngine;
+const PE = context.window.PackingEngine;
 
 // ── Test 14-16: Planner + Packer 集成 ──
 
@@ -150,7 +137,7 @@ assert(result14.hasErrors === false, `Integration Carton: errors=${JSON.stringif
 
 // Test 15: 变压器独占 FR
 const transItems = [
-  { model: 'Transformer', l: 2.80, w: 1.60, h: 2.40, weight: 8500, stackable: false, quantity: 2 }
+  { model: 'Transformer', l: 3.20, w: 2.50, h: 2.40, weight: 8500, stackable: false, quantity: 2 }
 ];
 const result15 = PE.calculate(transItems, { code: '20GP' }, { tolerance: 0.05,
   mixedContainers: Object.values(CDB.CONTAINER_DB)
@@ -176,4 +163,4 @@ assert(result16.totalPlaced >= 50,
 assert(result16.hasErrors === false, `Mixed integration: errors=${JSON.stringify(result16.checks?.map(c => c.errors))}`);
 
 console.log(`  Integration tests: ${pass}/${pass+fail} total passed`);
-if (fail > 0) process.exit(1);
+process.exit(fail > 0 ? 1 : 0);
