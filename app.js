@@ -258,16 +258,14 @@
     dropZone.addEventListener('click', async () => {
       if (window.TauriBridge && window.TauriBridge.isTauri) {
         try {
-          const path = await window.TauriBridge.pickExcelFile();
-          if (!path) return;
-          const bytes = await window.TauriBridge.readFileBytes(path);
-          if (!bytes) {
+          const picked = await window.TauriBridge.pickExcelFileRead();
+          if (!picked || !picked.bytes) {
             showError('文件读取失败，请重试～ 🥛');
             return;
           }
           // 安全转换：使用 slice 避免共享 ArrayBuffer 导致的多余字节
-          const arrayBuffer = new Uint8Array(bytes).slice().buffer;
-          processFileBuffer(arrayBuffer, path.split('/').pop() || path);
+          const arrayBuffer = new Uint8Array(picked.bytes).slice().buffer;
+          processFileBuffer(arrayBuffer, picked.name || '未命名文件');
         } catch (err) {
           console.error('Tauri file pick/read error:', err);
           showError('打开文件失败：' + (err.message || '未知错误') + ' 🥛');
@@ -1475,7 +1473,7 @@
       ensureCalculateButton();
     } catch (err) {
       console.error('Container recommendation error:', err);
-      recEl.innerHTML = '<div style="color:#C4827B;">箱型推荐出错：' + err.message + '</div>';
+      recEl.innerHTML = '<div style="color:#C4827B;">箱型推荐出错：' + escapeHtml(err.message) + '</div>';
       altEl.innerHTML = '';
       ensureCalculateButton();
     }
@@ -1886,7 +1884,7 @@
       state.visualization = TV.buildVisualization(result, 'three-viewer-container');
     } catch (err) {
       console.error('3D viewer error:', err);
-      container.innerHTML = '<div style="color:#999;padding:40px;text-align:center;">3D 视图加载失败：' + err.message + '</div>';
+      container.innerHTML = '<div style="color:#999;padding:40px;text-align:center;">3D 视图加载失败：' + escapeHtml(err.message) + '</div>';
     }
   }
 
