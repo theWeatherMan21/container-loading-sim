@@ -5,7 +5,7 @@
 
 const PackingEngine = (() => {
   const CDB = window.ContainerDB;
-  const { CONTAINER_DB, getEffectiveMaxDims, checkDoorConstraint, getOrientations, isStackable } = CDB;
+  const { CONTAINER_DB, getEffectiveMaxDims, checkDoorConstraint, getOrientations, isStackable, hasValidOrientationForContainer } = CDB;
 
   // ═══════════════════════════════════════════
   // 常量定义
@@ -93,12 +93,21 @@ const PackingEngine = (() => {
   }
 
   /**
-   * 合并相邻的可合并空间（同X或同Y方向上重叠的空间）
+   * 合并相邻且精确对齐的空间。
+   *
+   * 合并规则：
+   * 1. 同Z、同H、同Y、同W、X相邻 → 沿X扩展
+   * 2. 同Z、同H、同X、同L、Y相邻 → 沿Y扩展
+   *
+   * 非精确对齐空间不能用包围盒合并，否则会制造原本不存在的可用区域。
    */
   function mergeSpaces(spaces) {
     if (spaces.length <= 1) return spaces;
 
-    const merged = [];
+    const EPS = CONSTANTS.MERGE_EPS;
+
+    // ── 第一轮：精确对齐合并 ──
+    let merged = [];
     const used = new Set();
 
     for (let i = 0; i < spaces.length; i++) {
@@ -106,55 +115,43 @@ const PackingEngine = (() => {
       let current = { ...spaces[i] };
       used.add(i);
 
-      // 尝试与后续空间合并
       for (let j = i + 1; j < spaces.length; j++) {
         if (used.has(j)) continue;
         const other = spaces[j];
 
-        // 同一Z层，同Y范围，X相邻 → 沿X合并
-        if (Math.abs(current.z - other.z) < CONSTANTS.MERGE_EPS &&
-            Math.abs((current.z + current.H) - (other.z + other.H)) < CONSTANTS.MERGE_EPS &&
-            Math.abs(current.y - other.y) < CONSTANTS.MERGE_EPS &&
-            Math.abs(current.W - other.W) < CONSTANTS.MERGE_EPS) {
+        // 同Z同H同Y同W，X相邻
+        if (Math.abs(current.z - other.z) < EPS &&
+            Math.abs((current.z + current.H) - (other.z + other.H)) < EPS &&
+            Math.abs(current.y - other.y) < EPS &&
+            Math.abs(current.W - other.W) < EPS) {
 
-          // 检查X连续性
-          if (Math.abs((current.x + current.L) - other.x) < CONSTANTS.MERGE_EPS) {
+          if (Math.abs((current.x + current.L) - other.x) < EPS) {
             current.L += other.L;
             if (other.blockedAbove) current.blockedAbove = true;
-            used.add(j);
-            j = i; // 重新扫描
-            continue;
+            used.add(j); j = i; continue;
           }
-          if (Math.abs((other.x + other.L) - current.x) < CONSTANTS.MERGE_EPS) {
-            current.x = other.x;
-            current.L += other.L;
+          if (Math.abs((other.x + other.L) - current.x) < EPS) {
+            current.x = other.x; current.L += other.L;
             if (other.blockedAbove) current.blockedAbove = true;
-            used.add(j);
-            j = i;
-            continue;
+            used.add(j); j = i; continue;
           }
         }
 
-        // 同一Z层，同X范围，Y相邻 → 沿Y合并
-        if (Math.abs(current.z - other.z) < CONSTANTS.MERGE_EPS &&
-            Math.abs((current.z + current.H) - (other.z + other.H)) < CONSTANTS.MERGE_EPS &&
-            Math.abs(current.x - other.x) < CONSTANTS.MERGE_EPS &&
-            Math.abs(current.L - other.L) < CONSTANTS.MERGE_EPS) {
+        // 同Z同H同X同L，Y相邻
+        if (Math.abs(current.z - other.z) < EPS &&
+            Math.abs((current.z + current.H) - (other.z + other.H)) < EPS &&
+            Math.abs(current.x - other.x) < EPS &&
+            Math.abs(current.L - other.L) < EPS) {
 
-          if (Math.abs((current.y + current.W) - other.y) < CONSTANTS.MERGE_EPS) {
+          if (Math.abs((current.y + current.W) - other.y) < EPS) {
             current.W += other.W;
             if (other.blockedAbove) current.blockedAbove = true;
-            used.add(j);
-            j = i;
-            continue;
+            used.add(j); j = i; continue;
           }
-          if (Math.abs((other.y + other.W) - current.y) < CONSTANTS.MERGE_EPS) {
-            current.y = other.y;
-            current.W += other.W;
+          if (Math.abs((other.y + other.W) - current.y) < EPS) {
+            current.y = other.y; current.W += other.W;
             if (other.blockedAbove) current.blockedAbove = true;
-            used.add(j);
-            j = i;
-            continue;
+            used.add(j); j = i; continue;
           }
         }
       }
@@ -377,6 +374,10 @@ const PackingEngine = (() => {
   function findBestPlacement(item, emsSpaces, container, currentWeight, tolerance, placedItems = []) {
     let best = null;
     let bestScore = -Infinity;
+    if (container && !hasValidOrientationForContainer(item, container, tolerance)) {
+      return null;
+    }
+
     const orientations = getOrientations(item);
     const minSupport = SUPPORT_MIN_RATIO;
 
@@ -398,6 +399,11 @@ const PackingEngine = (() => {
         if (container.type !== 'flatRack') {
           const doorCheck = checkDoorConstraint({ l: o.l, w: o.w, h: o.h }, container, tolerance);
           if (!doorCheck.pass) continue;
+        }
+
+        // 计算失败必须保留未装货物，调用方据此决定换箱/重算。
+        if (!hasValidOrientationForContainer(item, container, tolerance)) {
+          return null;
         }
 
         // 重量检查
@@ -437,13 +443,18 @@ const PackingEngine = (() => {
 
         let totalScore = score + fitScore * CONSTANTS.FIT_WEIGHT;
 
-        // FR/OT 稳定性惩罚：货物高度超过箱体名义高度时惩罚该朝向
-        // FR 有效高度含 FR_REALITY_LIMITS，OT 有效高度含 maxOverHeight
-        // 两者都会膨胀 space.H 导致 fitZ 错误激励竖放
+        // FR/OT 允许超高，但运输稳定性要求优先选择低重心朝向。
+        // 只惩罚超过名义箱高仍不足以阻止合法但明显不稳定的侧立/竖放。
         const hasInflatedHeight = container.type === 'flatRack' || container.type === 'openTop';
-        if (hasInflatedHeight && container.H > 0 && o.h > container.H + CONSTANTS.EPS) {
-          const stabilityPenalty = (o.h / container.H) * CONSTANTS.FIT_WEIGHT * 0.5;
+        if (hasInflatedHeight && container.H > 0) {
+          const minimumHeight = Math.min(item.l, item.w, item.h);
+          const avoidableHeight = Math.max(0, o.h - minimumHeight);
+          const stabilityPenalty = (avoidableHeight / container.H) * CONSTANTS.FIT_WEIGHT;
           totalScore -= stabilityPenalty;
+
+          if (o.h > container.H + CONSTANTS.EPS) {
+            totalScore -= (o.h / container.H) * CONSTANTS.FIT_WEIGHT * 0.5;
+          }
         }
 
         if (totalScore > bestScore) {
@@ -740,24 +751,33 @@ const PackingEngine = (() => {
       }
     }
 
-    // 利用率
-    const totalVolume = placedItems.reduce((s, i) => s + i.l * i.w * i.h, 0);
+    const packed = [];
+    const oversized = [];
+    for (const item of placedItems) {
+      const bounds = getEffectiveMaxDims(container, tolerance);
+      if (container.type !== 'flatRack' && (item.l > bounds.maxL + CONSTANTS.EPS || item.w > bounds.maxW + CONSTANTS.EPS || item.h > bounds.maxH + CONSTANTS.EPS)) {
+        oversized.push(item);
+      } else {
+        packed.push(item);
+      }
+    }
+
+    const packedVolume = packed.reduce((s, i) => s + i.l * i.w * i.h, 0);
+    const packedWeight = packed.reduce((s, i) => s + i.weight, 0);
     const containerVol = container.L * container.W * container.H;
-    // 标准柜/OT 按标称容积计算利用率；FR 因可超限，标称利用率上限为 100%
-    const utilization = containerVol > 0 ? Math.min(1, totalVolume / containerVol) : 0;
-    // FR 空间效率：按含现实超限上限的有效包络容积计算
+    const utilization = containerVol > 0 ? Math.min(1, packedVolume / containerVol) : 0;
     const effectiveVolume = effDims.maxL * effDims.maxW * effDims.maxH;
-    const spaceEfficiency = effectiveVolume > 0 ? totalVolume / effectiveVolume : 0;
-    const weightUtil = container.payload > 0 ? currentWeight / container.payload : 0;
+    const spaceEfficiency = effectiveVolume > 0 ? packedVolume / effectiveVolume : 0;
+    const weightUtil = container.payload > 0 ? packedWeight / container.payload : 0;
 
     return {
-      placedItems,
-      unplacedItems,
+      placedItems: packed,
+      unplacedItems: [...unplacedItems, ...oversized],
       utilization,
       spaceEfficiency,
       weightUtil,
-      totalWeight: currentWeight,
-      totalVolume,
+      totalWeight: packedWeight,
+      totalVolume: packedVolume,
       containerCode: container.code || 'UNKNOWN'
     };
   }
@@ -768,26 +788,24 @@ const PackingEngine = (() => {
 
   function multiContainerPack(allItems, containerSpec, options = {}) {
     const containers = [];
+    const totalInputItems = getTotalQuantity(allItems);
+    const maxContainers = options.maxContainers || CONSTANTS.MAX_CONTAINERS;
     let remaining = expandItems(allItems);
 
-    while (remaining.length > 0 && containers.length < CONSTANTS.MAX_CONTAINERS) {
+    while (remaining.length > 0 && containers.length < maxContainers) {
       const result = packSingleContainer(remaining, containerSpec, options);
+      result.isInterim = true; // 未装件会在下一箱继续尝试，不视为本箱错误
       containers.push(result);
 
-      remaining = result.unplacedItems.map(u => ({
-        model: u.model,
-        l: u.l || u.origL,
-        w: u.w || u.origW,
-        h: u.h || u.origH,
-        weight: u.weight || 0,
-        stackable: u.stackable !== undefined ? u.stackable : true,
-        orientationFixed: false,
-        colorIndex: u.colorIndex || 0
-      }));
+      remaining = result.unplacedItems.map(u => ({ ...u, quantity: 1 }));
 
       // 安全检查：如果没有任何货物被装入，说明所有剩余货物都不fit
       if (result.placedItems.length === 0) break;
     }
+
+    const nonEmptyContainers = containers.filter(c => c.placedItems.length > 0);
+    const emptyCount = containers.length - nonEmptyContainers.length;
+    if (emptyCount > 0) containers.splice(0, containers.length, ...nonEmptyContainers);
 
     // 汇总
     const totalPlaced = containers.reduce((s, c) => s + c.placedItems.length, 0);
@@ -797,13 +815,17 @@ const PackingEngine = (() => {
       : 0;
     const totalWeightLoaded = containers.reduce((s, c) => s + c.totalWeight, 0);
 
+    if (totalPlaced + remaining.length !== totalInputItems) {
+      throw new Error(`多箱装箱账目不一致：输入${totalInputItems}件，已装${totalPlaced}件，未装${remaining.length}件`);
+    }
+
     return {
       containerCode: containerSpec.code,
       containerName: containerSpec.nameCN,
       containers,
       containerCount: containers.length,
       totalPlaced,
-      totalItems: totalPlaced + remaining.length,  // 总待装件数
+      totalItems: totalInputItems,
       unplacedCount: remaining.length,
       unplacedItems: remaining.map(i => i.model).filter((v, idx, arr) => arr.indexOf(v) === idx),
       avgUtilization,
@@ -819,6 +841,7 @@ const PackingEngine = (() => {
 
   function mixedMultiContainerPack(allItems, containerSpecs, options = {}) {
     const containers = [];
+    const totalInputItems = getTotalQuantity(allItems);
     const skippedContainers = [];  // 记录被跳过的箱型及原因
     let remaining = expandItems(allItems);
     let totalVolumePlaced = 0;
@@ -867,16 +890,7 @@ const PackingEngine = (() => {
       totalWeightLoaded += result.totalWeight;
 
       // 先计算新 remaining，再用旧 remaining 做自适应判断
-      const newRemaining = result.unplacedItems.map(u => ({
-        model: u.model,
-        l: u.l || u.origL,
-        w: u.w || u.origW,
-        h: u.h || u.origH,
-        weight: u.weight || 0,
-        stackable: u.stackable !== undefined ? u.stackable : true,
-        orientationFixed: false,
-        colorIndex: u.colorIndex || 0
-      }));
+      const newRemaining = result.unplacedItems.map(u => ({ ...u, quantity: 1 }));
 
       // 自适应检测：当前箱利用率 < 20% 且全是不可叠货 → 下一箱切换 stackable-first
       const hadStackableBefore = remaining.some(i => i.stackable !== false);
@@ -901,19 +915,26 @@ const PackingEngine = (() => {
       ? nonEmptyContainers.reduce((s, c) => s + c.utilization, 0) / nonEmptyContainers.length
       : 0;
 
+    if (totalPlaced + remaining.length !== totalInputItems) {
+      throw new Error(`混合装箱账目不一致：输入${totalInputItems}件，已装${totalPlaced}件，未装${remaining.length}件`);
+    }
+
     return {
       containerCode: 'mixed',
       containerName: '混合箱型',
       containers: nonEmptyContainers,
       containerCount: nonEmptyContainers.length,
       totalPlaced,
-      totalItems: totalPlaced + remaining.length,
+      totalItems: totalInputItems,
       unplacedCount: remaining.length,
       unplacedItems: remaining.map(i => i.model).filter((v, idx, arr) => arr.indexOf(v) === idx),
       avgUtilization,
       totalVolumePlaced,
       totalWeightLoaded,
-      maxPayload: containerSpecs.reduce((s, spec) => s + spec.payload, 0),
+      maxPayload: nonEmptyContainers.reduce((s, c) => {
+        const spec = containerSpecs.find(candidate => candidate.code === c.containerCode);
+        return s + (spec ? spec.payload : 0);
+      }, 0),
       skippedContainers
     };
   }
@@ -1046,6 +1067,17 @@ const PackingEngine = (() => {
         type: 'cornerViolation',
         message: `${cornerViolations.length} 处叠放货物四角悬空`,
         details: cornerViolations.slice(0, 5)
+      });
+    }
+
+    // 8. 货物未装入：这是计算错误/约束失败，不是普通提示。
+    // 中间箱（isInterim）的未装件会移交后续箱继续尝试，不在此处报错，
+    // 最终剩余未装由 calculate() 在结果级统一上报。
+    if (!result.isInterim && result.unplacedItems && result.unplacedItems.length > 0) {
+      errors.push({
+        type: 'unplaced',
+        message: `${result.unplacedItems.length} 件货物未能装入 ${container.code}`,
+        details: result.unplacedItems.slice(0, 10).map(item => item.model || '未知货物')
       });
     }
 
@@ -1274,7 +1306,26 @@ const PackingEngine = (() => {
    * 获取展开后的总数
    */
   function getTotalQuantity(items) {
-    return items.reduce((s, i) => s + (i.quantity || 1), 0);
+    return items.reduce((s, i) => {
+      const qty = Number(i.quantity == null ? 1 : i.quantity);
+      return s + (Number.isFinite(qty) && qty > 0 ? Math.floor(qty) : 0);
+    }, 0);
+  }
+
+  function validateCalculationInput(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error('货物列表为空');
+    }
+    for (const item of items) {
+      const dims = [item.l, item.w, item.h, item.weight].map(Number);
+      if (dims.some(v => !Number.isFinite(v)) || dims[0] <= 0 || dims[1] <= 0 || dims[2] <= 0 || dims[3] < 0) {
+        throw new Error(`${item.model || '未知货物'} 的尺寸或重量无效`);
+      }
+      const qty = Number(item.quantity == null ? 1 : item.quantity);
+      if (!Number.isInteger(qty) || qty <= 0) {
+        throw new Error(`${item.model || '未知货物'} 的数量必须为正整数`);
+      }
+    }
   }
 
   // ═══════════════════════════════════════════
@@ -1289,13 +1340,20 @@ const PackingEngine = (() => {
    * @returns {{ result, checkResult, recommendation }}
    */
   function calculate(items, containerCodeOrSpec, options = {}) {
-    const tolerance = options.tolerance || 0.05;
+    validateCalculationInput(items);
+    const tolerance = options.tolerance == null ? 0.05 : Number(options.tolerance);
+    if (!Number.isFinite(tolerance) || tolerance < 0) {
+      throw new Error('操作间隙必须为非负数');
+    }
     const autoRetry = options.autoRetry !== false;
     const mixedContainers = options.mixedContainers;
 
     // 混合装箱模式：使用 Planner 分配层进行全局分组分配
     if (mixedContainers && mixedContainers.length > 0) {
       const planner = window.Planner;
+      if (!planner || typeof planner.planContainerAssignment !== 'function') {
+        throw new Error('Planner 未加载，无法执行混合装箱');
+      }
       const plan = planner.planContainerAssignment(items, mixedContainers);
 
       // 如果 Planner 没有产生任何分配，回退到原始贪心法
@@ -1312,23 +1370,46 @@ const PackingEngine = (() => {
         return result;
       }
 
-      // 逐组调用 Packer 试装
+      // 逐组调用 Packer 试装；每组对应一个候选箱，不能产出比用户选择更多的箱子。
+      // 某组一箱装不下时，剩余件留在未装列表，由最终结果级统一上报。
       const containers = [];
+      const allUnplaced = [...plan.unassigned];
+      const availableByCode = new Map(mixedContainers.map(spec => [spec.code, spec]));
+
       for (const assignment of plan.assignments) {
-        const spec = mixedContainers.find(s => s.code === assignment.containerCode);
-        if (!spec) continue;
+        const spec = availableByCode.get(assignment.containerCode);
+        if (!spec) {
+          allUnplaced.push(...assignment.items);
+          continue;
+        }
 
-        const packResult = packSingleContainer(assignment.items, spec, {
+        const assignmentResult = multiContainerPack(assignment.items, spec, {
           tolerance,
-          sortStrategy: 'smart'
+          sortStrategy: 'smart',
+          maxContainers: 1
         });
 
-        containers.push({
-          ...packResult,
-          containerCode: spec.code,
-          containerName: spec.nameCN || spec.name || '未知箱型',
-          plannerReason: assignment.reason
-        });
+        for (const packedContainer of assignmentResult.containers) {
+          if (packedContainer.placedItems.length === 0) continue;
+          containers.push({
+            ...packedContainer,
+            containerCode: spec.code,
+            containerName: spec.nameCN || spec.name || '未知箱型',
+            plannerReason: assignment.reason
+          });
+        }
+
+        if (assignmentResult.unplacedCount > 0) {
+          const packedCount = assignmentResult.totalPlaced;
+          allUnplaced.push(...assignment.items.slice(packedCount));
+        }
+      }
+
+      const totalPlaced = containers.reduce((s, c) => s + c.placedItems.length, 0);
+      const inputTotal = getTotalQuantity(items);
+      const accountedUnplaced = Math.max(0, inputTotal - totalPlaced);
+      if (allUnplaced.length !== accountedUnplaced) {
+        throw new Error(`装箱结果账目不一致：输入${inputTotal}件，已装${totalPlaced}件，未装记录${allUnplaced.length}件`);
       }
 
       let result = {
@@ -1336,16 +1417,19 @@ const PackingEngine = (() => {
         containerName: '混合箱型（Planner分配）',
         containers,
         containerCount: containers.length,
-        totalPlaced: containers.reduce((s, c) => s + c.placedItems.length, 0),
-        totalItems: containers.reduce((s, c) => s + c.placedItems.length + c.unplacedItems.length, 0),
-        unplacedCount: containers.reduce((s, c) => s + c.unplacedItems.length, 0),
-        unplacedItems: [],
+        totalPlaced,
+        totalItems: inputTotal,
+        unplacedCount: allUnplaced.length,
+        unplacedItems: allUnplaced.map(i => i.model || i.name || '未知').filter((v, idx, arr) => arr.indexOf(v) === idx),
         avgUtilization: containers.length > 0
           ? containers.reduce((s, c) => s + c.utilization, 0) / containers.length
           : 0,
         totalVolumePlaced: containers.reduce((s, c) => s + (c.totalVolume || 0), 0),
         totalWeightLoaded: containers.reduce((s, c) => s + (c.totalWeight || 0), 0),
-        maxPayload: mixedContainers.reduce((s, spec) => s + spec.payload, 0)
+        maxPayload: containers.reduce((s, c) => {
+          const spec = availableByCode.get(c.containerCode);
+          return s + (spec ? spec.payload : 0);
+        }, 0)
       };
 
       // 自检所有箱
@@ -1356,7 +1440,13 @@ const PackingEngine = (() => {
 
       // Planner 路径不自动回退贪心法 — Planner 分配是有意为之的
       result.checks = allChecks;
-      result.hasErrors = allChecks.some(c => c.errors.length > 0);
+      if (result.unplacedCount > 0) {
+        result.checks.push({
+          errors: [{ type: 'unplaced', message: `${result.unplacedCount} 件货物未能装入任何可用箱型` }],
+          warnings: []
+        });
+      }
+      result.hasErrors = result.checks.some(c => c.errors.length > 0);
       result.hasWarnings = allChecks.some(c => c.warnings.length > 0);
       return result;
     }
@@ -1375,8 +1465,15 @@ const PackingEngine = (() => {
     // 多箱分配
     let result = multiContainerPack(items, containerSpec, { tolerance, sortStrategy: 'smart' });
 
-    // 自检所有箱
+    // 自检所有箱；未装货物本身即计算失败（约束不满足），需在结果级显式报错，
+    // 否则全被拒绝时 containers 为空，hasErrors 会漏报。
     const allChecks = result.containers.map(c => selfCheck(c, containerSpec, tolerance));
+    if (result.unplacedCount > 0) {
+      allChecks.push({
+        errors: [{ type: 'unplaced', message: `${result.unplacedCount} 件货物未能装入 ${containerSpec.code}` }],
+        warnings: []
+      });
+    }
     const hasCriticalWarning = allChecks.some(c => c.warnings.some(w => w.suggestRecalc));
 
     // 重算（如需要）
@@ -1384,6 +1481,12 @@ const PackingEngine = (() => {
       result = recalibrate(items, containerSpec, result, { tolerance });
       // 重新自检
       result.checks = result.containers.map(c => selfCheck(c, containerSpec, tolerance));
+      if (result.unplacedCount > 0) {
+        result.checks.push({
+          errors: [{ type: 'unplaced', message: `${result.unplacedCount} 件货物未能装入 ${containerSpec.code}` }],
+          warnings: []
+        });
+      }
     } else {
       result.checks = allChecks;
     }

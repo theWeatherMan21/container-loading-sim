@@ -11,37 +11,30 @@ const Planner = (() => {
   const VOLUME_FACTOR = 0.85;    // 分配体积上限系数（留缝隙）
 
   /**
-   * 货物分类
+   * 货物分类（结合 container-db 综合门约束 + 业务规则）
+   *
+   * 规则：
+   * 1. 需要 FR/OT 或无法装载 → 'oversize'
+   * 2. 可进入标准柜（20GP/40HQ）→ 按重量/叠放细分
+   *
    * @param {object} item - {model, l, w, h, weight, stackable, quantity}
    * @returns {'oversize'|'heavy-nonstack'|'stackable'|'light-nonstack'}
    */
   function classifyItem(item) {
-    const isOversize = checkIsOversizeForAnyContainer(item);
-    if (isOversize) return 'oversize';
+    // 使用 container-db 的综合门约束+尺寸检查判定所需箱型等级
+    const requiredType = CDB.classifyItemByContainerType(item, 0.01);
 
+    // 无法装载、需要 FR、需要 OT → 明确超限
+    if (requiredType === 'none' || requiredType === 'FR' || requiredType === 'OT') {
+      return 'oversize';
+    }
+
+    // 可进入标准柜 → 按重量和尺寸细分
     const maxDim = Math.max(item.l, item.w, item.h);
     const isHeavy = item.weight >= HEAVY_WEIGHT || maxDim >= HEAVY_MIN_DIM;
-
     if (item.stackable === false && isHeavy) return 'heavy-nonstack';
     if (item.stackable !== false) return 'stackable';
     return 'light-nonstack';
-  }
-
-  /**
-   * 检查货物是否超限（对任何标准箱型）
-   * 超门高：h > 箱门高度 (20GP=2.28m)
-   * 超门宽：min(l,w) > 箱门宽度 (20GP=2.342m)
-   */
-  function checkIsOversizeForAnyContainer(item) {
-    const gp20 = CONTAINER_DB['20GP'];
-    if (!gp20) return false;
-
-    // 高度超过门高 → 超限
-    if (item.h > gp20.doorH + 0.01) return true;
-    // 宽度（较小截面）超过门宽 → 超限
-    if (Math.min(item.l, item.w) > gp20.doorW + 0.01) return true;
-
-    return false;
   }
 
   /**
@@ -49,23 +42,13 @@ const Planner = (() => {
    * @param {object} item
    * @returns {Array} 可用箱型规格列表
    */
-  function filterContainerTypes(item) {
-    const allTypes = Object.values(CONTAINER_DB);
+  function filterContainerTypes(item, containerSpecs = Object.values(CONTAINER_DB)) {
+    const allTypes = Array.isArray(containerSpecs) ? containerSpecs.filter(Boolean) : [];
 
     return allTypes.filter(container => {
-      // 尺寸硬约束
-      const sizeCheck = CDB.checkSizeConstraints(item, container, 0.01);
-      if (!sizeCheck.pass) return false;
-
-      // 门约束
-      const doorCheck = CDB.checkDoorConstraint(item, container, 0.01);
-      if (!doorCheck.pass) return false;
-
-      // 载重约束（单件不能超过箱型载重）
+      if (!CDB.hasValidOrientationForContainer(item, container, 0.01)) return false;
       const weightCheck = CDB.checkWeightConstraint(0, item.weight, container);
-      if (!weightCheck.pass) return false;
-
-      return true;
+      return weightCheck.pass;
     });
   }
 
@@ -99,10 +82,7 @@ const Planner = (() => {
 
     // Step 2: 超限货分配 — 每件独占一个适合的最小 FR/OT
     for (const item of oversizeItems) {
-      const usableTypes = filterContainerTypes(item);
-      const frTypes = usableTypes.filter(t => t.type === 'flatRack');
-      const otTypes = usableTypes.filter(t => t.type === 'openTop');
-      const candidates = [...frTypes, ...otTypes];
+      const candidates = filterContainerTypes(item, containerSpecs);
 
       if (candidates.length === 0) {
         unassigned.push(item);
@@ -134,9 +114,12 @@ const Planner = (() => {
       const itemVol = item.l * item.w * item.h;
       let placed = false;
 
+      const usableCodes = new Set(filterContainerTypes(item, containerSpecs).map(c => c.code));
+
       // 尝试加入已有组
       for (const group of heavyAssignmentGroups) {
-        if (group.totalWeight + item.weight <= group.container.payload &&
+        if (usableCodes.has(group.container.code) &&
+            group.totalWeight + item.weight <= group.container.payload &&
             (group.totalVolume + itemVol) <= group.container.L * group.container.W * group.container.H * 0.8) {
           group.items.push(item);
           group.totalWeight += item.weight;
@@ -150,7 +133,7 @@ const Planner = (() => {
         // 找能装下这件货的最小标准箱型
         let bestContainer = null;
         for (const c of standardContainers) {
-          if (item.weight <= c.payload &&
+          if (usableCodes.has(c.code) && item.weight <= c.payload &&
               itemVol <= c.L * c.W * c.H * 0.8) {
             bestContainer = c;
             break;
@@ -183,9 +166,22 @@ const Planner = (() => {
       const item = stackableItems[i];
       const itemVol = item.l * item.w * item.h;
 
+      const usableCodes = new Set(filterContainerTypes(item, containerSpecs).map(c => c.code));
+
+      if (stackableGroup && !usableCodes.has(stackableGroup.container.code)) {
+        assignments.push({
+          containerCode: stackableGroup.container.code,
+          items: stackableGroup.items,
+          reason: `可叠货聚合，${stackableGroup.items.length}件，体积${stackableGroup.totalVolume.toFixed(2)}m³`
+        });
+        stackableGroup = null;
+        i--;
+        continue;
+      }
+
       if (!stackableGroup) {
         for (const c of standardContainers) {
-          if (itemVol <= c.L * c.W * c.H * VOLUME_FACTOR) {
+          if (usableCodes.has(c.code) && itemVol <= c.L * c.W * c.H * VOLUME_FACTOR) {
             stackableGroup = {
               container: c,
               items: [],
@@ -232,9 +228,22 @@ const Planner = (() => {
       const item = lightNonStack[i];
       const itemVol = item.l * item.w * item.h;
 
+      const usableCodes = new Set(filterContainerTypes(item, containerSpecs).map(c => c.code));
+
+      if (lightGroup && !usableCodes.has(lightGroup.container.code)) {
+        assignments.push({
+          containerCode: lightGroup.container.code,
+          items: lightGroup.items,
+          reason: `轻型不可叠分组，${lightGroup.items.length}件`
+        });
+        lightGroup = null;
+        i--;
+        continue;
+      }
+
       if (!lightGroup) {
         for (const c of standardContainers) {
-          if (itemVol <= c.L * c.W * c.H * VOLUME_FACTOR) {
+          if (usableCodes.has(c.code) && itemVol <= c.L * c.W * c.H * VOLUME_FACTOR) {
             lightGroup = {
               container: c,
               items: [],

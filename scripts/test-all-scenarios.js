@@ -4,18 +4,14 @@
  * 依赖: 需在项目根目录执行，前端 JS 使用 window 全局对象
  */
 
-const { JSDOM } = require('jsdom');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
-// 创建 DOM 环境
-const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
-  url: 'http://localhost',
-  runScripts: 'dangerously'
-});
-global.window = dom.window;
-global.document = dom.window.document;
-global.navigator = dom.window.navigator;
+// vm 沙箱加载（替代 JSDOM，兼容 Node 20+ / 23）
+const context = { console, window: {}, setTimeout, clearTimeout };
+context.window = context;
+vm.createContext(context);
 
 // 按顺序加载脚本
 const scripts = [
@@ -26,14 +22,11 @@ const scripts = [
 ];
 
 for (const script of scripts) {
-  const code = fs.readFileSync(path.join(__dirname, '..', script), 'utf-8');
-  const el = dom.window.document.createElement('script');
-  el.textContent = code;
-  dom.window.document.body.appendChild(el);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', script), 'utf8'), context, { filename: script });
 }
 
-const CDB = dom.window.ContainerDB;
-const PE = dom.window.PackingEngine;
+const CDB = context.window.ContainerDB;
+const PE = context.window.PackingEngine;
 
 // ═══════════════════════════════════════════
 // 测试场景
@@ -94,7 +87,7 @@ const scenarios = [
     expect: {
       minBoxes: 2,
       maxBoxes: 3,
-      suggestion: '40HQ by weight (30000kg / 26510kg ≈ 2 boxes)'
+      suggestion: '体积112.5m³需多箱，40HQ×2 比 20GP×5 更省'
     }
   }
 ];
@@ -238,11 +231,9 @@ for (const scenario of scenarios) {
 logHeader('数据库完整性验证');
 
 const expectedContainers = [
-  '20GP', '40GP', '40HQ', '45HQ',
+  '20GP', '40HQ', '45HQ',
   '20OT', '40OT',
-  '20RF', '40RF', '40HRF',
-  '20FR', '40FR',
-  '20PF', '40PF'
+  '20FR', '40FR'
 ];
 
 for (const code of expectedContainers) {
