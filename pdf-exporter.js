@@ -1,7 +1,10 @@
 /**
- * PDF 导出模块
+ * PDF 导出模块 — 按 A4 页规范分页渲染
  * 生成含3D透视截图 + 详细装箱清单的PDF
  * 依赖: jsPDF (window.jspdf), html2canvas
+ *
+ * 分页策略：报告按逻辑页拆分（标题汇总 / 每箱明细 / 问题报告），
+ * 每页单独 html2canvas 渲染并写入一个 A4 物理页，杜绝页缝切字与元素错位。
  */
 
 const PdfExporter = (() => {
@@ -20,6 +23,13 @@ const PdfExporter = (() => {
       .replace(/'/g, '&#39;');
   }
 
+  // A4 规格（mm）
+  const PAGE_W = 210;
+  const PAGE_H = 297;
+
+  /**
+   * 生成分页报告 HTML：每个 .pdf-page 块对应一个 A4 页
+   */
   function renderReportHtml(result, visualization, config = {}) {
     const el = document.getElementById('pdf-report');
     if (!el) {
@@ -27,123 +37,142 @@ const PdfExporter = (() => {
     }
     el.innerHTML = '';
 
-    const summaryRows = result.containers.map((c, i) => `
-      <tr style="border-bottom:1px solid #EDE7E0;">
-        <td style="padding:8px;">箱${i + 1}</td>
-        <td style="padding:8px;">${escapeHtml(c.containerCode)}</td>
-        <td style="padding:8px;">${c.placedItems.length}</td>
-        <td style="padding:8px;">${c.totalVolume.toFixed(2)}</td>
-        <td style="padding:8px;">${c.totalWeight.toFixed(0)}</td>
-        <td style="padding:8px;">${(c.utilization * 100).toFixed(1)}%</td>
-      </tr>
-    `).join('');
+    const pages = [];
 
-    let detailHtml = '';
+    // ═══ 页 1: 标题 + 方案汇总 ═══
+    let summaryRows = '';
     for (let i = 0; i < result.containers.length; i++) {
       const c = result.containers[i];
-      const screenshot = visualization && visualization.getScreenshotFixed ? visualization.getScreenshotFixed(i, 800, 600) : null;
-      detailHtml += `
-        <div style="margin-bottom:32px;page-break-inside:avoid;">
-          <h2 style="font-size:18px;margin:0 0 12px;color:#3C3A36;">箱${i + 1}: ${escapeHtml(c.containerCode)} 详细清单</h2>
-          ${screenshot ? `<img src="${screenshot}" style="width:auto;height:auto;max-width:100%;max-height:260px;object-fit:contain;background:#F5F0EB;border-radius:12px;margin-bottom:12px;" />` : ''}
-          <table style="width:100%;border-collapse:collapse;font-size:12px;">
-            <thead>
-              <tr style="background:#EDE7E0;">
-                <th style="padding:8px;text-align:left;">序号</th>
-                <th style="padding:8px;text-align:left;">品名</th>
-                <th style="padding:8px;text-align:left;">长(m)</th>
-                <th style="padding:8px;text-align:left;">宽(m)</th>
-                <th style="padding:8px;text-align:left;">高(m)</th>
-                <th style="padding:8px;text-align:left;">重量(kg)</th>
-                <th style="padding:8px;text-align:left;">位置</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${c.placedItems.map((p, idx) => `
-                <tr style="border-bottom:1px solid #EDE7E0;">
-                  <td style="padding:6px 8px;">${escapeHtml(p.id || idx + 1)}</td>
-                  <td style="padding:6px 8px;">${escapeHtml(p.model)}</td>
-                  <td style="padding:6px 8px;">${p.l.toFixed(2)}</td>
-                  <td style="padding:6px 8px;">${p.w.toFixed(2)}</td>
-                  <td style="padding:6px 8px;">${p.h.toFixed(2)}</td>
-                  <td style="padding:6px 8px;">${p.weight.toFixed(0)}</td>
-                  <td style="padding:6px 8px;">(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      `;
+      summaryRows += `
+        <tr style="border-bottom:1px solid #EDE7E0;">
+          <td style="padding:6px 10px;text-align:center;">${i + 1}</td>
+          <td style="padding:6px 10px;">${escapeHtml(c.containerCode)}</td>
+          <td style="padding:6px 10px;text-align:right;">${c.placedItems.length}</td>
+          <td style="padding:6px 10px;text-align:right;">${(c.totalVolume || 0).toFixed(2)}</td>
+          <td style="padding:6px 10px;text-align:right;">${(c.totalWeight || 0).toFixed(0)}</td>
+          <td style="padding:6px 10px;text-align:right;">${(c.utilization * 100).toFixed(1)}%</td>
+        </tr>`;
     }
 
-    let issueHtml = '';
+    pages.push(`
+      <div class="pdf-page" style="width:794px;background:#fff;color:#3C3A36;padding:40px 48px;box-sizing:border-box;font-family:'Work Sans','PingFang SC','Microsoft YaHei',sans-serif;">
+        <div style="text-align:center;margin-bottom:28px;border-bottom:2px solid #7B9A7B;padding-bottom:16px;">
+          <h1 style="font-size:26px;color:#7B9A7B;margin:0 0 8px;">装箱方案报告</h1>
+          <p style="color:#7A7570;margin:4px 0;font-size:12px;">生成时间: ${new Date().toLocaleString('zh-CN')}</p>
+          <p style="color:#7A7570;margin:4px 0;font-size:11px;">
+            操作间隙: ${(config.tolerance != null ? (config.tolerance * 100) : 5)}cm |
+            箱型: ${escapeHtml(config.containerType || result.containerName || '自动')} |
+            自动重算: ${config.autoRetry ? '是' : '否'}${config.recalculated ? '（已触发）' : ''}
+          </p>
+        </div>
+        <h2 style="font-size:16px;margin:0 0 10px;color:#3C3A36;">一、方案汇总</h2>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr style="background:#EDE7E0;">
+              <th style="padding:7px 10px;text-align:center;border:1px solid #D8D2CC;">箱号</th>
+              <th style="padding:7px 10px;text-align:left;border:1px solid #D8D2CC;">箱型</th>
+              <th style="padding:7px 10px;text-align:right;border:1px solid #D8D2CC;">件数</th>
+              <th style="padding:7px 10px;text-align:right;border:1px solid #D8D2CC;">体积m³</th>
+              <th style="padding:7px 10px;text-align:right;border:1px solid #D8D2CC;">重量kg</th>
+              <th style="padding:7px 10px;text-align:right;border:1px solid #D8D2CC;">利用率</th>
+            </tr>
+          </thead>
+          <tbody>${summaryRows}</tbody>
+        </table>
+        <p style="font-size:12px;color:#7A7570;margin-top:14px;">
+          总计: ${result.containerCount} 个${escapeHtml(result.containerCode || 'mixed')} |
+          共装 ${result.totalPlaced} 件 |
+          总重 ${(result.totalWeightLoaded || 0).toFixed(0)} kg |
+          总容积 ${(result.totalVolumePlaced || 0).toFixed(2)} m³
+        </p>
+      </div>
+    `);
+
+    // ═══ 每箱一页: 明细清单 ═══
+    for (let i = 0; i < result.containers.length; i++) {
+      const c = result.containers[i];
+      const screenshot = visualization && visualization.getScreenshotFixed
+        ? visualization.getScreenshotFixed(i, 900, 560)
+        : null;
+
+      let rows = '';
+      for (let idx = 0; idx < c.placedItems.length; idx++) {
+        const p = c.placedItems[idx];
+        rows += `
+          <tr style="border-bottom:1px solid #F0EBE5;">
+            <td style="padding:5px 8px;text-align:center;border:1px solid #E5DED6;">${idx + 1}</td>
+            <td style="padding:5px 8px;border:1px solid #E5DED6;">${escapeHtml(p.model)}</td>
+            <td style="padding:5px 8px;text-align:right;border:1px solid #E5DED6;">${p.l.toFixed(2)}</td>
+            <td style="padding:5px 8px;text-align:right;border:1px solid #E5DED6;">${p.w.toFixed(2)}</td>
+            <td style="padding:5px 8px;text-align:right;border:1px solid #E5DED6;">${p.h.toFixed(2)}</td>
+            <td style="padding:5px 8px;text-align:right;border:1px solid #E5DED6;">${p.weight.toFixed(1)}</td>
+            <td style="padding:5px 8px;text-align:center;border:1px solid #E5DED6;">(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})</td>
+          </tr>`;
+      }
+
+      pages.push(`
+        <div class="pdf-page" style="width:794px;background:#fff;color:#3C3A36;padding:32px 44px;box-sizing:border-box;font-family:'Work Sans','PingFang SC','Microsoft YaHei',sans-serif;">
+          <div style="border-bottom:2px solid #B8A89A;padding-bottom:10px;margin-bottom:12px;">
+            <h2 style="font-size:17px;margin:0;color:#3C3A36;">箱 ${i + 1}: ${escapeHtml(c.containerCode)} 详细清单</h2>
+            <p style="font-size:11px;color:#7A7570;margin:4px 0 0;">
+              装载 ${c.placedItems.length} 件 · 体积利用率 ${(c.utilization * 100).toFixed(1)}% ·
+              载重利用率 ${((c.weightUtil || 0) * 100).toFixed(1)}% · 总重 ${(c.totalWeight || 0).toFixed(0)} kg
+            </p>
+          </div>
+          ${screenshot ? `<div style="text-align:center;margin:8px 0 12px;"><img src="${screenshot}" style="max-width:100%;max-height:170px;object-fit:contain;background:#F5F0EB;border:1px solid #E5DED6;border-radius:8px;" /></div>` : ''}
+          <table style="width:100%;border-collapse:collapse;font-size:11px;">
+            <thead>
+              <tr style="background:#EDE7E0;">
+                <th style="padding:6px 8px;text-align:center;border:1px solid #D8D2CC;">序号</th>
+                <th style="padding:6px 8px;text-align:left;border:1px solid #D8D2CC;">品名</th>
+                <th style="padding:6px 8px;text-align:right;border:1px solid #D8D2CC;">长(m)</th>
+                <th style="padding:6px 8px;text-align:right;border:1px solid #D8D2CC;">宽(m)</th>
+                <th style="padding:6px 8px;text-align:right;border:1px solid #D8D2CC;">高(m)</th>
+                <th style="padding:6px 8px;text-align:right;border:1px solid #D8D2CC;">重量(kg)</th>
+                <th style="padding:6px 8px;text-align:center;border:1px solid #D8D2CC;">位置(x,y,z)</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `);
+    }
+
+    // ═══ 问题报告页 ═══
     if (result.hasErrors || result.hasWarnings || result.unplacedCount > 0) {
       const issueColor = result.hasErrors ? '#C97B7B' : '#C4A882';
-      let rows = '';
+      let issueRows = '';
       for (let i = 0; i < result.containers.length; i++) {
         const ch = (result.checks && result.checks[i]) || { errors: [], warnings: [] };
         for (const err of ch.errors) {
-          rows += `<p style="margin:4px 0;color:#C97B7B;">[箱${i + 1}错误] ${escapeHtml(err.message)}</p>`;
+          issueRows += `<p style="margin:4px 0;color:#C97B7B;font-size:12px;">[箱${i + 1}错误] ${escapeHtml(err.message)}</p>`;
           if (err.details) {
             for (const d of err.details) {
-              rows += `<p style="margin:2px 0 2px 16px;color:#7A7570;">- ${escapeHtml(d)}</p>`;
+              issueRows += `<p style="margin:2px 0 2px 18px;color:#7A7570;font-size:11px;">- ${escapeHtml(d)}</p>`;
             }
           }
         }
         for (const warn of ch.warnings) {
-          rows += `<p style="margin:4px 0;color:#C4A882;">[箱${i + 1}警告] ${escapeHtml(warn.message)}</p>`;
+          issueRows += `<p style="margin:4px 0;color:#C4A882;font-size:12px;">[箱${i + 1}警告] ${escapeHtml(warn.message)}</p>`;
         }
       }
       if (result.unplacedCount > 0) {
-        rows += `<p style="margin:4px 0;color:#C97B7B;">[未装载] ${result.unplacedCount} 件货物无法装入: ${escapeHtml(result.unplacedItems.join(', '))}</p>`;
+        issueRows += `<p style="margin:4px 0;color:#C97B7B;font-size:12px;">[未装载] ${result.unplacedCount} 件货物无法装入: ${escapeHtml((result.unplacedItems || []).join(', '))}</p>`;
       }
-      issueHtml = `
-        <div style="margin-top:24px;">
-          <h2 style="font-size:16px;margin:0 0 8px;color:${issueColor};">问题报告</h2>
-          ${rows}
+      pages.push(`
+        <div class="pdf-page" style="width:794px;background:#fff;color:#3C3A36;padding:40px 48px;box-sizing:border-box;font-family:'Work Sans','PingFang SC','Microsoft YaHei',sans-serif;">
+          <h2 style="font-size:16px;margin:0 0 10px;color:${issueColor};">问题报告</h2>
+          <div style="border:1px solid #E5DED6;border-radius:8px;padding:12px 16px;">${issueRows || '<p style="color:#7A7570;font-size:12px;margin:0;">无</p>'}</div>
         </div>
-      `;
+      `);
     }
 
-    el.innerHTML = `
-      <div style="text-align:center;margin-bottom:24px;">
-        <h1 style="font-size:28px;color:#7B9A7B;margin:0;">装箱方案报告</h1>
-        <p style="color:#7A7570;margin:8px 0 0;font-size:12px;">生成时间: ${new Date().toLocaleString('zh-CN')}</p>
-        <p style="color:#7A7570;margin:4px 0 0;font-size:11px;">
-          操作间隙: ${(config.tolerance != null ? config.tolerance : 5)}cm | 
-          箱型: ${escapeHtml(config.containerType || result.containerName || '自动')} |
-          自动重算: ${config.autoRetry ? '是' : '否'}
-          ${config.recalculated ? ' | 已触发重算' : ''}
-        </p>
-      </div>
-      <h2 style="font-size:16px;margin:0 0 8px;color:#3C3A36;">方案汇总</h2>
-      <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:16px;">
-        <thead>
-          <tr style="background:#EDE7E0;">
-            <th style="padding:8px;text-align:left;">箱号</th>
-            <th style="padding:8px;text-align:left;">箱型</th>
-            <th style="padding:8px;text-align:left;">件数</th>
-            <th style="padding:8px;text-align:left;">体积m³</th>
-            <th style="padding:8px;text-align:left;">重量kg</th>
-            <th style="padding:8px;text-align:left;">利用率</th>
-          </tr>
-        </thead>
-        <tbody>${summaryRows}</tbody>
-      </table>
-      <p style="font-size:12px;color:#7A7570;margin-bottom:24px;">
-        总计: ${result.containerCount}个${escapeHtml(result.containerCode || 'mixed')} | 共装${result.totalPlaced}件 | 总重${result.totalWeightLoaded.toFixed(0)}kg
-      </p>
-      ${detailHtml}
-      ${issueHtml}
-    `;
-
+    el.innerHTML = pages.join('');
     return el;
   }
 
   /**
-   * 生成PDF报告
-   * @param {object} result - PackingEngine.calculate 的返回结果
-   * @param {object} visualization - ThreeViewer.buildVisualization 的返回结果
+   * 生成PDF报告（逐 A4 页渲染）
    */
   async function generateReport(result, visualization, config = {}) {
     const { jsPDF } = window.jspdf;
@@ -155,7 +184,6 @@ const PdfExporter = (() => {
       alert('html2canvas 未加载，请确认 vendor/html2canvas.min.js 已引入');
       return;
     }
-
     if (!result || !result.containers || result.containers.length === 0) {
       alert('没有装箱结果数据，请先完成计算');
       return;
@@ -164,49 +192,52 @@ const PdfExporter = (() => {
     try {
       const reportEl = renderReportHtml(result, visualization, config);
 
-      // Ensure element is visible and rendered for html2canvas
-      const originalVisibility = reportEl.style.visibility;
+      // 元素需可见供 html2canvas 渲染（移到视口外，避免闪烁）
+      const originalDisplay = reportEl.style.display;
       const originalPosition = reportEl.style.position;
       const originalLeft = reportEl.style.left;
       reportEl.classList.remove('hidden');
-      reportEl.style.visibility = 'visible';
+      reportEl.style.display = 'block';
       reportEl.style.position = 'absolute';
-      reportEl.style.left = '0';
+      reportEl.style.left = '-9999px';
       reportEl.style.top = '0';
-      reportEl.style.zIndex = '-9999';
 
-      const canvas = await html2canvas(reportEl, {
-        scale: 2,
-        backgroundColor: '#ffffff',
-        useCORS: true,
-        logging: false
-      });
+      const pageEls = reportEl.querySelectorAll('.pdf-page');
+      const doc = new jsPDF('p', 'mm', 'a4');
+      const margin = 0; // 页面内容已自带内边距
 
-      // Restore hidden styles
-      reportEl.style.visibility = originalVisibility;
+      for (let i = 0; i < pageEls.length; i++) {
+        const canvas = await html2canvas(pageEls[i], {
+          scale: 2,
+          backgroundColor: '#ffffff',
+          useCORS: true,
+          logging: false,
+          windowWidth: 900
+        });
+
+        const imgData = canvas.toDataURL('image/png');
+        const imgW = PAGE_W - margin * 2;
+        let imgH = (canvas.height * imgW) / canvas.width;
+
+        // 内容超出单页高度时整体缩放适配（保证不切字、元素完整）
+        const maxH = PAGE_H - 10;
+        if (imgH > maxH) {
+          const ratio = maxH / imgH;
+          imgH = maxH;
+          doc.addImage(imgData, 'PNG', margin, 5, imgW * ratio, imgH * ratio);
+        } else {
+          doc.addImage(imgData, 'PNG', margin, 5, imgW, imgH);
+        }
+
+        if (i < pageEls.length - 1) doc.addPage();
+      }
+
+      // 恢复隐藏样式
+      reportEl.style.display = originalDisplay;
       reportEl.style.position = originalPosition;
       reportEl.style.left = originalLeft;
       reportEl.style.top = '';
-      reportEl.style.zIndex = '';
       reportEl.classList.add('hidden');
-
-      const imgData = canvas.toDataURL('image/png');
-      const doc = new jsPDF('p', 'mm', 'a4');
-      const pageW = 210;
-      const pageH = 297;
-      const imgW = pageW;
-      const imgH = (canvas.height * imgW) / canvas.width;
-      let position = 0;
-
-      doc.addImage(imgData, 'PNG', 0, position, imgW, imgH);
-      let heightLeft = imgH - pageH;
-
-      while (heightLeft > 0) {
-        position = heightLeft - imgH;
-        doc.addPage();
-        doc.addImage(imgData, 'PNG', 0, position, imgW, imgH);
-        heightLeft -= pageH;
-      }
 
       const fileName = `装箱方案_${result.containerCode || 'mixed'}_${new Date().toISOString().slice(0, 10)}.pdf`;
 

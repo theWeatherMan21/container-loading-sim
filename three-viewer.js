@@ -56,6 +56,7 @@ let mouseNDC = null;         // 鼠标归一化坐标
 let tooltipEl = null;        // tooltip DOM 元素
 let cargoMeshes = [];        // 所有 cargo mesh 平铺引用（用于 raycasting）
 let canvasEls = [];          // 所有 canvas DOM 元素（用于 event listener 清理）
+let labelSprites = [];       // 所有标签 Sprite（型号/旋转/超限/尺寸标注），供"显示标签"开关控制
 
 // ═══════════════════════════════════════════
 // 资源清理
@@ -124,6 +125,7 @@ function disposeAll() {
   raycaster = null;
   mouseNDC = null;
   cargoMeshes = [];
+  labelSprites = [];
   for (const canvas of canvasEls) {
     canvas.removeEventListener('mousemove', onCanvasMouseMove);
     canvas.removeEventListener('mouseleave', () => {});
@@ -380,6 +382,7 @@ function createLabelSprite(text, bgColor = 'rgba(255,255,255,0.85)', textColor =
   const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
   const sprite = new THREE.Sprite(material);
   sprite.scale.set(width / 80, height / 80, 1);
+  labelSprites.push(sprite); // 纳入标签开关控制
   return sprite;
 }
 
@@ -837,6 +840,33 @@ function escapeHtml(str) {
   return el.innerHTML;
 }
 
+/**
+ * 创建标签显示开关（型号/旋转/超限/尺寸标注 标签的统一控制）
+ */
+function createLabelToggle() {
+  if (!parentEl) return;
+  const old = parentEl.querySelector('.three-label-toggle');
+  if (old) old.remove();
+
+  const box = document.createElement('label');
+  box.className = 'three-label-toggle';
+  box.style.cssText = 'position:absolute;top:8px;right:8px;z-index:10;display:flex;align-items:center;gap:6px;' +
+    'background:rgba(255,255,255,0.8);backdrop-filter:blur(6px);padding:4px 10px;border-radius:8px;' +
+    'font-size:11px;color:#555;cursor:pointer;user-select:none;box-shadow:0 2px 6px rgba(0,0,0,0.08);';
+
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = true;
+  cb.style.cssText = 'accent-color:#8FA39B;cursor:pointer;margin:0;';
+  cb.addEventListener('change', () => {
+    for (const s of labelSprites) s.visible = cb.checked;
+  });
+
+  box.appendChild(cb);
+  box.appendChild(document.createTextNode('显示标签'));
+  parentEl.appendChild(box);
+}
+
 // ═══════════════════════════════════════════
 // 构建完整可视化
 // ═══════════════════════════════════════════
@@ -906,12 +936,13 @@ function buildVisualization(result, parentId) {
 
     const wrapper = document.createElement('div');
     wrapper.className = 'three-container';
-    wrapper.style.cssText = 'width:100%;height:100%;position:absolute;top:0;left:0;display:none;';
+    // overflow:hidden 防止 canvas 尺寸异常时溢出覆盖下方按钮（WebView2 布局时序差异）
+    wrapper.style.cssText = 'width:100%;height:100%;position:absolute;top:0;left:0;display:none;overflow:hidden;';
     wrapper.dataset.containerIndex = i;
 
     const canvas = document.createElement('canvas');
     canvas.id = `three-canvas-${i}`;
-    canvas.style.cssText = 'width:100%;height:100%;display:block;';
+    canvas.style.cssText = 'width:100%;height:100%;display:block;touch-action:none;';
     wrapper.appendChild(canvas);
     parent.appendChild(wrapper);
 
@@ -977,6 +1008,7 @@ function buildVisualization(result, parentId) {
   startAnimation();
   setupResizeObserver();
   createPresetButtons();
+  createLabelToggle();
 
   return {
     containerCount: result.containers.length,
