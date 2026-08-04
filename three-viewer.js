@@ -33,6 +33,9 @@ const CAMERA_PRESETS = {
   side:      { pos: [1, 0, 0], target: [0, 0, 0], label: '侧视' }
 };
 
+// 摄像机基准：以 40HQ 对角线为统一视距，确保不同箱型大小一致
+const REFERENCE_DIAGONAL = Math.sqrt(12.036 * 12.036 + 2.35 * 2.35 + 2.697 * 2.697); // ≈ 12.55m
+
 // ═══════════════════════════════════════════
 // 全局状态
 // ═══════════════════════════════════════════
@@ -240,6 +243,48 @@ function renderContainerBox(group, containerSpec) {
     doorMarker.position.set(L * SCALE / 2, 0, 0);
     group.add(doorMarker);
   }
+
+  // ═══ 尺寸标注（L×W×H） ═══
+  const dimLabelStyle = { font: 'bold 36px sans-serif', fillStyle: '#7A706B', textAlign: 'center', textBaseline: 'middle' };
+
+  function makeDimSprite(text) {
+    const cvs = document.createElement('canvas');
+    const ctx = cvs.getContext('2d');
+    ctx.font = dimLabelStyle.font;
+    const m = ctx.measureText(text);
+    cvs.width = m.width + 24; cvs.height = 52;
+    ctx.font = dimLabelStyle.font;
+    ctx.fillStyle = 'rgba(255,255,255,0.88)';
+    roundRect(ctx, 0, 0, cvs.width, cvs.height, 8);
+    ctx.fill();
+    ctx.fillStyle = dimLabelStyle.fillStyle;
+    ctx.textAlign = dimLabelStyle.textAlign;
+    ctx.textBaseline = dimLabelStyle.textBaseline;
+    ctx.fillText(text, cvs.width / 2, cvs.height / 2);
+    const tex = new THREE.CanvasTexture(cvs);
+    tex.minFilter = THREE.LinearFilter;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }));
+    sp.scale.set(cvs.width / 40, cvs.height / 40, 1);
+    return sp;
+  }
+
+  const offset = 0.25;
+  // 长度标注 — 沿 X 轴顶部
+  const lblL = makeDimSprite(`${L.toFixed(2)}m`);
+  lblL.position.set(0, H * SCALE / 2 + offset, 0);
+  group.add(lblL);
+
+  // 宽度标注 — 沿 Z 轴顶部
+  const lblW = makeDimSprite(`${W.toFixed(2)}m`);
+  lblW.position.set(0, H * SCALE / 2 + offset, W * SCALE / 2 + offset);
+  lblW.scale.set(lblW.scale.x * 0.75, lblW.scale.y * 0.75, 1);
+  group.add(lblW);
+
+  // 高度标注 — 沿 Y 轴侧面
+  const lblH = makeDimSprite(`${H.toFixed(2)}m`);
+  lblH.position.set(L * SCALE / 2 + offset, 0, W * SCALE / 2 + offset);
+  lblH.scale.set(lblH.scale.x * 0.75, lblH.scale.y * 0.75, 1);
+  group.add(lblH);
 }
 
 function addWalls(group, L, W, H, mat, includeTop) {
@@ -395,6 +440,17 @@ function renderCargo(group, placedItems, containerSpec, containerIndex = 0) {
         color = modelColors[model];
       }
 
+      // 标准箱型如果出现超界结果，停止渲染该箱，避免把错误结果伪装成放大后的合法箱体。
+      const effDims = window.ContainerDB && window.ContainerDB.getEffectiveMaxDims
+        ? window.ContainerDB.getEffectiveMaxDims(containerSpec, 0)
+        : { maxL: containerSpec.L, maxW: containerSpec.W, maxH: containerSpec.H };
+      const invalidGeometry = containerSpec.type !== 'flatRack' && (l > effDims.maxL + 1e-6 || w > effDims.maxW + 1e-6 || h > effDims.maxH + 1e-6);
+      if (invalidGeometry) {
+        console.error(`[3D Diag] ❌ 箱${containerIndex + 1} (${containerSpec.code}) 货物 ${model} 超出箱体有效尺寸，拒绝伪造放大渲染`);
+        skippedCount++;
+        continue;
+      }
+
       // Three.js 坐标转换
       const cx = x * SCALE - containerSpec.L * SCALE / 2 + l * SCALE / 2;
       const cy = z * SCALE - containerSpec.H * SCALE / 2 + h * SCALE / 2;
@@ -498,9 +554,7 @@ function setupCameraRenderer(scene, canvasId, containerSpec) {
   renderer.shadowMap.enabled = false;
   renderers[canvasId] = renderer;
 
-  const diagonal = Math.sqrt(
-    containerSpec.L * containerSpec.L + containerSpec.W * containerSpec.W + containerSpec.H * containerSpec.H
-  );
+  const diagonal = REFERENCE_DIAGONAL;
   const dist = diagonal * 0.9;
   const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, dist * 4);
   camera.position.set(dist * 0.7, dist * 0.55, dist * 0.7);
@@ -641,16 +695,8 @@ function applyCameraPreset(presetName) {
   const ctrl = controls[activeCanvasId];
   if (!camera || !ctrl) return;
 
-  // 基于集装箱尺寸计算实际位置（对角线为基准）
-  const scene = scenes[activeCanvasId];
-  if (!scene) return;
-  const containerGroup = scene.getObjectByName('container');
-  let diagonal = 5; // fallback
-  if (containerGroup && containerGroup.userData && containerGroup.userData.diagonal) {
-    diagonal = containerGroup.userData.diagonal;
-  }
-
-  const dist = diagonal * 0.85;
+  // 使用统一基准视距，确保不同箱型切换时大小一致
+  const dist = REFERENCE_DIAGONAL * 0.85;
   const [rx, ry, rz] = preset.pos;
   const targetPos = new THREE.Vector3(rx * dist, ry * dist, rz * dist);
   const targetLookAt = new THREE.Vector3(...preset.target);
@@ -884,14 +930,8 @@ function buildVisualization(result, parentId) {
 
     // 场景
     const scene = createContainerScene(canvas.id, containerSpec);
-
-    // 存储对角线长度供预设视角使用
-    const diagonal = Math.sqrt(
-      containerSpec.L * containerSpec.L + containerSpec.W * containerSpec.W + containerSpec.H * containerSpec.H
-    );
     const containerGroup = scene.getObjectByName('container');
     if (containerGroup) {
-      containerGroup.userData = { diagonal };
       renderCargo(containerGroup, c.placedItems || [], containerSpec, i);
     } else {
       console.error(`[3D Diag] ❌ 箱${i + 1}: containerGroup 未创建！`);
