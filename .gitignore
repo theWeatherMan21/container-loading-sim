@@ -27,6 +27,9 @@ Thumbs.db
 coverage/
 .nyc_output/
 
+# Generated test reports
+test-reports/
+
 # Auto-downloaded vendor
 vendor/html2canvas.min.js
 
