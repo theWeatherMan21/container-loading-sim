@@ -192,7 +192,11 @@ const Planner = (() => {
               container: c,
               items: [],
               totalVolume: 0,
-              totalWeight: 0
+              totalWeight: 0,
+              // 同型号可叠货共享同一底面积，足迹按"型号去重"计一次，
+              // 避免大量薄板件把地板面积低估，从而避免 Planner 分组 → 扩容兜底的连锁。
+              totalFloor: 0,
+              floorModels: new Set()
             };
             break;
           }
@@ -201,8 +205,12 @@ const Planner = (() => {
 
       if (stackableGroup) {
         const maxVol = stackableGroup.container.L * stackableGroup.container.W * stackableGroup.container.H * VOLUME_FACTOR;
+        const itemFloor = item.l * item.w;
+        const isNewFloorModel = !stackableGroup.floorModels.has(item.model);
+        const nextFloor = stackableGroup.totalFloor + (isNewFloorModel ? itemFloor : 0);
         if (stackableGroup.totalVolume + itemVol > maxVol ||
-            stackableGroup.totalWeight + item.weight > stackableGroup.container.payload) {
+            stackableGroup.totalWeight + item.weight > stackableGroup.container.payload ||
+            nextFloor > stackableGroup.container.L * stackableGroup.container.W) {
           assignments.push({
             containerCode: stackableGroup.container.code,
             items: stackableGroup.items,
@@ -215,6 +223,8 @@ const Planner = (() => {
         stackableGroup.items.push(item);
         stackableGroup.totalVolume += itemVol;
         stackableGroup.totalWeight += item.weight;
+        stackableGroup.totalFloor = nextFloor;
+        if (isNewFloorModel) stackableGroup.floorModels.add(item.model);
       } else {
         unassigned.push(item);
       }
@@ -233,6 +243,7 @@ const Planner = (() => {
     for (let i = 0; i < lightNonStack.length; i++) {
       const item = lightNonStack[i];
       const itemVol = item.l * item.w * item.h;
+      const itemFloor = item.l * item.w;
 
       const usableCodes = new Set(filterContainerTypes(item, containerSpecs).map(c => c.code));
 
