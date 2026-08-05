@@ -360,4 +360,28 @@ test('test_kitten_simulate_container_options_picks_40fr', () => {
   assert(sim[0].code === '40FR', `expected 40FR first in sorted results, got ${sim[0].code}`);
 });
 
+test('test_kitten_single_box_capacity_finds_40fr_pearl', () => {
+  // AKSU 场景：40FR 单箱物理可装 12 件（珍珠解），20FR 装不下。
+  // 模拟退火必须稳定识别 40FR 容量，这是"程序能否一箱装下"的保证。
+  const items = [
+    { model: '真空室', l: 2.5, w: 2.75, h: 2.8, weight: 7500, quantity: 1, stackable: false },
+    { model: '高阀', l: 2.2, w: 1.53, h: 0.86, weight: 1000, quantity: 1, stackable: false },
+    { model: '70泵', l: 0.9, w: 0.7, h: 0.7, weight: 360, quantity: 1, stackable: true },
+    { model: '30泵', l: 1.5, w: 0.67, h: 0.7, weight: 450, quantity: 1, stackable: true },
+    { model: '真空泵组', l: 3.1, w: 1.03, h: 1.95, weight: 2000, quantity: 1, stackable: false },
+    { model: 'KT800', l: 1.8, w: 1.15, h: 1.9, weight: 2000, quantity: 2, stackable: false },
+    { model: '控制柜', l: 2.7, w: 0.8, h: 2.2, weight: 1000, quantity: 1, stackable: false },
+    { model: '炉体底架', l: 2.35, w: 0.43, h: 2.15, weight: 300, quantity: 1, stackable: false },
+    { model: '分子泵', l: 0.56, w: 0.56, h: 0.65, weight: 200, quantity: 2, stackable: true },
+    { model: '偏压电源', l: 0.94, w: 0.55, h: 1.0, weight: 80, quantity: 1, stackable: true }
+  ];
+  const cap40 = PE.searchSingleBoxCapacity(items, CDB.CONTAINER_DB['40FR'], { tolerance: 0.05, optimizationSeed: 20260805 });
+  assert(cap40.maxPlaced === 12, `40FR single box must hold all 12, got ${cap40.maxPlaced}`);
+  const cap20 = PE.searchSingleBoxCapacity(items, CDB.CONTAINER_DB['20FR'], { tolerance: 0.05, optimizationSeed: 20260805 });
+  assert(cap20.maxPlaced < 12, `20FR must NOT hold all 12 (fits at most ${cap20.maxPlaced})`);
+  // 预演结果应包含 singleBoxCapacity 字段
+  const sim = PE.simulateContainerOptions(items, [CDB.CONTAINER_DB['40FR']], { tolerance: 0.05, optimizationSeed: 20260805 });
+  assert(sim[0].singleBoxCapacity === 12, `simulate must report 40FR singleBoxCapacity=12, got ${sim[0].singleBoxCapacity}`);
+});
+
 if (!process.exitCode) console.log(`\n${passed} regression tests passed`);

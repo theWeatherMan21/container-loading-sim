@@ -1099,6 +1099,89 @@ const PackingEngine = (() => {
     return bestResult;
   }
 
+  /**
+   * 单箱容量搜索（模拟退火）：找到"单箱最多能装几件"的近似上界。
+   *
+   * 背景：EMS 贪心对"大件 + FR 悬出"场景存在珍珠解（如 40FR 一箱 12 件），
+   * 随机洗牌命中率约 1/5146，贪心交换卡在局部最优（11/12）。
+   * 模拟退火（交换 + 移动操作 + 温度递减 + 温度重置）实测 10/10 次找到最优，
+   * 平均约 0.7s——是预演"该箱型单箱实际容量"的可靠手段。
+   *
+   * @param {Array} allItems - 货物列表（含 quantity）
+   * @param {object} containerSpec - 箱型
+   * @param {object} options - { tolerance, optimizationSeed, iterations }
+   * @returns {{maxPlaced: number, total: number, order: Array|null, iterations: number, ms: number}}
+   */
+  function searchSingleBoxCapacity(allItems, containerSpec, options = {}) {
+    const tolerance = options.tolerance == null ? 0.05 : options.tolerance;
+    const iterations = Number.isInteger(options.iterations) ? options.iterations : 5000;
+    const expanded = expandItems(allItems);
+    const total = expanded.length;
+    const startedAt = Date.now();
+
+    const evaluate = (order) => packSingleContainer(order, containerSpec, { tolerance, sortStrategy: 'input-order' }).placedItems.length;
+
+    let seed = Number.isInteger(options.optimizationSeed) ? options.optimizationSeed : 20260805;
+    let bestOrder = null;
+    let bestN = 0;
+
+    // 多起点：从几个确定性排序开始退火，提高覆盖；默认 4 起点，调用方可缩减
+    const startOrders = ['smart', 'small-first', 'big-middle', 'group-total-volume-desc']
+      .map(s => { try { return sortItems([...expanded], s); } catch (e) { return [...expanded]; } })
+      .slice(0, Number.isInteger(options.maxStarts) ? Math.max(1, options.maxStarts) : 4);
+
+    for (const start of startOrders) {
+      const rng = createSeededRandom(seed++);
+      let current = start.slice();
+      let currentN = evaluate(current);
+      if (currentN > bestN) { bestN = currentN; bestOrder = current.slice(); }
+      if (bestN === total) break;
+
+      let T = 5.0;
+      let stagnantResets = 0;   // 温度重置后无改进的轮数
+      let lastResetBest = bestN;
+      for (let i = 0; i < iterations; i++) {
+        // 操作：60% 交换，40% 移动（取出插入随机位）——移动是跳出局部最优的关键
+        const trial = current.slice();
+        if (rng() < 0.6) {
+          const a = Math.floor(rng() * trial.length), b = Math.floor(rng() * trial.length);
+          [trial[a], trial[b]] = [trial[b], trial[a]];
+        } else {
+          const a = Math.floor(rng() * trial.length);
+          const [item] = trial.splice(a, 1);
+          trial.splice(Math.floor(rng() * trial.length), 0, item);
+        }
+        const n = evaluate(trial);
+        const delta = n - currentN;
+        if (delta >= 0 || rng() < Math.exp(delta / T)) {
+          current = trial; currentN = n;
+          if (n > bestN) { bestN = n; bestOrder = trial.slice(); }
+        }
+        T *= 0.9995;
+        if (T < 0.1) {
+          T = 5.0; current = start.slice(); currentN = evaluate(current);
+          if (bestN === lastResetBest) {
+            stagnantResets++;
+            if (stagnantResets >= 2) break; // 连续 2 轮重置无改进，该起点已收敛
+          } else {
+            stagnantResets = 0;
+            lastResetBest = bestN;
+          }
+        }
+        if (bestN === total) break;
+      }
+      if (bestN === total) break;
+    }
+
+    return {
+      maxPlaced: bestN,
+      total,
+      order: bestOrder,
+      iterations,
+      ms: Date.now() - startedAt
+    };
+  }
+
   // ═══════════════════════════════════════════
   // 混合箱型多箱分配（按指定顺序装填不同箱型）
   // ═══════════════════════════════════════════
@@ -1997,6 +2080,19 @@ const PackingEngine = (() => {
           randomStarts: simRandomStarts,
           optimizationTimeMs: simTimeMs
         });
+        // 单箱容量搜索：多箱结果可能因贪心顺序低估箱型能力（如 40FR 实际可 1 箱装 12 件，
+        // 但多起点只找到 2 箱）。用模拟退火找"单箱最多装几件"，识别珍珠解。
+        let singleBox = null;
+        try {
+          const cap = searchSingleBoxCapacity(items, spec, {
+            tolerance: options.tolerance == null ? 0.05 : options.tolerance,
+            optimizationSeed: options.optimizationSeed,
+            maxStarts: 2   // 预演只判断"能否单箱装完"，2 起点足够且省时
+          });
+          singleBox = { maxPlaced: cap.maxPlaced, total: cap.total };
+        } catch (capErr) {
+          // 容量搜索失败不影响主结果
+        }
         results.push({
           code: spec.code,
           nameCN: spec.nameCN || spec.name || spec.code,
@@ -2004,7 +2100,9 @@ const PackingEngine = (() => {
           totalPlaced: result.totalPlaced,
           unplacedCount: result.unplacedCount,
           avgUtilization: result.avgUtilization,
-          feasible: result.unplacedCount === 0
+          feasible: result.unplacedCount === 0,
+          singleBoxCapacity: singleBox ? singleBox.maxPlaced : null,
+          totalItems: singleBox ? singleBox.total : expandedTotal(items)
         });
       } catch (err) {
         results.push({
@@ -2036,6 +2134,7 @@ const PackingEngine = (() => {
     mixedMultiContainerPack,
     simulateContainerOptions,
     refineBySwap,
+    searchSingleBoxCapacity,
     selfCheck,
     recalibrate,
     expandItems,

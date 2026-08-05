@@ -1481,6 +1481,18 @@
               optimizationTimeMs: 3000
             });
             console.log('[refreshContainerRecommendation] simulation:', simulation.map(s => `${s.code}:${s.containerCount}箱`).join(', '));
+            // 单箱容量优先：若某箱型模拟退火确认"单箱可装完全部"，直接推荐（珍珠解识别）。
+            const oneBoxFit = simulation.find(s => s.feasible && s.singleBoxCapacity != null && s.singleBoxCapacity >= s.totalItems);
+            if (oneBoxFit && oneBoxFit.code !== recommendation.primary.code) {
+              const promoted = CDB.CONTAINER_DB[oneBoxFit.code];
+              if (promoted) {
+                recommendation.primary = promoted;
+                recommendation.reasoning =
+                  `实际装箱验证：${oneBoxFit.code} 可单箱装完全部 ${oneBoxFit.totalItems} 件货物，` +
+                  `优于原推荐 ${recommendation.primary.code}（需 ${(simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount || '?'} 箱）。`;
+                recommendation.promotedBySimulation = true;
+              }
+            }
             const bestSim = simulation.find(s => s.feasible);
             if (bestSim && bestSim.code !== recommendation.primary.code &&
                 bestSim.containerCount < (simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount) {
