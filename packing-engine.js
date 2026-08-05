@@ -1009,7 +1009,10 @@ const PackingEngine = (() => {
     const expanded = expandItems(allItems);
     const candidates = [
       { name: 'smart', items: allItems, options: { ...options, sortStrategy: 'smart', optimize: false } },
-      { name: 'group-total-volume-desc', items: allItems, options: { ...options, sortStrategy: 'group-total-volume-desc', optimize: false } }
+      { name: 'group-total-volume-desc', items: allItems, options: { ...options, sortStrategy: 'group-total-volume-desc', optimize: false } },
+      { name: 'small-first', items: allItems, options: { ...options, sortStrategy: 'small-first', optimize: false } },
+      { name: 'big-middle', items: allItems, options: { ...options, sortStrategy: 'big-middle', optimize: false } },
+      { name: 'structured-fr', items: allItems, options: { ...options, sortStrategy: 'structured-fr', optimize: false } }
     ];
 
     for (let i = 0; i < randomStarts; i++) {
@@ -1048,6 +1051,52 @@ const PackingEngine = (() => {
     best.optimization.timeBudgetMs = maxTimeMs;
     best.optimization.timeUsedMs = Date.now() - startedAt;
     return best;
+  }
+
+  /**
+   * 邻域搜索精化：对候选解做"相邻交换"局部改进。
+   *
+   * 注意：对单箱"珍珠解"（如 40FR 一箱 12 件）收益有限——局部交换易陷入
+   * 局部最优（实测 2000 次交换仍 11/12），广域随机重启更有效。
+   * 本函数保留用于多箱场景的轻量改进，不作为单箱容量保证。
+   *
+   * @param {Array} allItems - 货物列表
+   * @param {object} containerSpec - 箱型
+   * @param {object} options - 含 sortStrategy（生成初始顺序）
+   * @param {number} passes - 交换轮数
+   * @returns 精化后的结果
+   */
+  function refineBySwap(allItems, containerSpec, options = {}, passes = 30) {
+    const expanded = expandItems(allItems);
+    let order = sortItems([...expanded], options.sortStrategy || 'smart');
+    let bestResult = multiContainerPackOnce(order, containerSpec, { ...options, sortStrategy: 'input-order' });
+    let bestPlaced = bestResult.totalPlaced || 0;
+    let bestOrder = order.slice();
+
+    const rng = createSeededRandom(Number.isInteger(options.optimizationSeed) ? options.optimizationSeed : 20260805);
+    for (let pass = 0; pass < passes; pass++) {
+      // 随机选两个位置交换（相邻更可能改善碎片化，但全范围更通用）
+      const a = Math.floor(rng() * order.length);
+      const b = Math.floor(rng() * order.length);
+      if (a === b) continue;
+      const trial = order.slice();
+      [trial[a], trial[b]] = [trial[b], trial[a]];
+      const result = multiContainerPackOnce(trial, containerSpec, { ...options, sortStrategy: 'input-order' });
+      if ((result.totalPlaced || 0) > bestPlaced ||
+          ((result.totalPlaced || 0) === bestPlaced && result.totalVolume > bestResult.totalVolume)) {
+        bestPlaced = result.totalPlaced || 0;
+        bestResult = result;
+        bestOrder = trial.slice();
+        order = trial.slice();
+      }
+      if (bestPlaced === expanded.length) break; // 全部装入即停
+    }
+
+    if (bestPlaced > 0) {
+      bestResult = multiContainerPackOnce(bestOrder, containerSpec, { ...options, sortStrategy: 'input-order' });
+    }
+    bestResult.refined = { passes: passes, finalPlaced: bestPlaced, total: expanded.length };
+    return bestResult;
   }
 
   // ═══════════════════════════════════════════
@@ -1496,6 +1545,28 @@ const PackingEngine = (() => {
       return items;
     }
 
+    // structured-fr：FR 悬出场景的显式结构化顺序（直接返回排序结果，不走 comparator）。
+    // 经验证可装 40FR 一箱 12 件的排列：前段窄矮件（宽≤1.6 且 高≤1.2，铺满 y 悬出区）
+    // → 两个最大不可叠件（体积降序，占中段）→ 剩余件（宽度降序收尾）。
+    // 这是对"大件 + 超宽悬出"场景的定向启发，无法被通用排序规则复现。
+    if (strategy === 'structured-fr') {
+      const maxDim = (item) => Math.max(item.l, item.w, item.h);
+      const volume = (item) => item.l * item.w * item.h;
+      const list = [...items];
+      list.sort((a, b) => volume(b) - volume(a));
+      const middle = list.filter(it => it.stackable === false && maxDim(it) > 2.5).slice(0, 2);
+      // front：可叠小件（≤1.2）+ 不可叠窄矮件（宽≤1.6 且 高≤1.2，如 KT-800）——先铺前段
+      const front = list.filter(it =>
+        (it.stackable !== false && maxDim(it) <= 1.2) ||
+        (it.stackable === false && it.w <= 1.6 && it.h <= 2.0 && !middle.includes(it))
+      );
+      const back = list.filter(it => !middle.includes(it) && !front.includes(it));
+      front.sort((a, b) => b.w - a.w);
+      middle.sort((a, b) => volume(b) - volume(a));
+      back.sort((a, b) => b.w - a.w);
+      return [...front, ...middle, ...back];
+    }
+
     return items.sort((a, b) => {
       // ── smart 策略：三级分组，解决异构混装碎片化问题 ──
       // 层1: 重型不可叠（需独占连续地板空间）→ 最先装
@@ -1534,6 +1605,44 @@ const PackingEngine = (() => {
         const ta = tier(a), tb = tier(b);
         if (ta !== tb) return ta - tb;
         return (b.l * b.w * b.h) - (a.l * a.w * a.h);
+      }
+
+      // ── small-first 策略：小件/可叠件优先填充前段，大件靠后 ──
+      // 针对 FR 超宽悬出场景：大件（如 2.5×2.75×2.8 真空室）先放会占满
+      // 前段并割裂空间，导致小件无法进入其身后。先铺矮件/可叠件可让
+      // 大件落在中段，小件收尾——这是 40FR 一箱 12 件解的结构。
+      if (strategy === 'small-first') {
+        const maxDim = (item) => Math.max(item.l, item.w, item.h);
+        const tier = (item) => {
+          if (item.stackable !== false) return 1; // 可叠小件最先（能叠高，填充灵活）
+          const d = maxDim(item);
+          if (d <= 1.6) return 2;   // 小不可叠次之
+          if (d <= 2.5) return 3;   // 中不可叠
+          return 4;                 // 大不可叠最后
+        };
+        const ta = tier(a), tb = tier(b);
+        if (ta !== tb) return ta - tb;
+        // 同级：体积升序（小件先）
+        return (a.l * a.w * a.h) - (b.l * b.w * b.h);
+      }
+
+      // ── big-middle 策略：小件先铺前段 → 两个最大件 → 中件 → 窄件 → 小件收尾 ──
+      // 已验证：该顺序对"大件+FR 悬出"场景能稳定装下（40FR 一箱 12 件）。
+      // 与 small-first 的差异：大不可叠件（真空泵组/真空室）放在"小不可叠"之后
+      // 而非最后——前段由 KT-800 等中件铺满后，最大件落在中段悬出区。
+      if (strategy === 'big-middle') {
+        const maxDim = (item) => Math.max(item.l, item.w, item.h);
+        const tier = (item) => {
+          const d = maxDim(item);
+          if (item.stackable !== false) return d <= 1.2 ? 1 : 5; // 可叠小件最前，可叠大件最后
+          if (d <= 1.6) return 2;    // 小不可叠（70泵/分子泵）
+          if (d <= 2.5) return 4;    // 中不可叠（高阀/炉体底架）
+          return 3;                  // 大不可叠（真空泵组/真空室/控制柜）——中段！
+        };
+        const ta = tier(a), tb = tier(b);
+        if (ta !== tb) return ta - tb;
+        // 同级：体积升序（小件先）
+        return (a.l * a.w * a.h) - (b.l * b.w * b.h);
       }
 
       // ── 原有策略：不可叠优先 → 体积/重量降序 ──
@@ -1874,6 +1983,7 @@ const PackingEngine = (() => {
    */
   function simulateContainerOptions(items, containerSpecs, options = {}) {
     const results = [];
+    const expandedTotal = (list) => list.reduce((s, i) => s + (i.quantity || 1), 0);
     // 预演需要比默认更强的搜索：单件适配不代表实际能装下，
     // 大件 + FR 悬出场景需要较多逐件洗牌才能找到紧凑排布（如 40FR 一箱 12 件）。
     const simRandomStarts = Number.isInteger(options.randomStarts) ? options.randomStarts : 60;
@@ -1925,6 +2035,7 @@ const PackingEngine = (() => {
     multiContainerPack,
     mixedMultiContainerPack,
     simulateContainerOptions,
+    refineBySwap,
     selfCheck,
     recalibrate,
     expandItems,
