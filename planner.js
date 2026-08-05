@@ -196,7 +196,10 @@ const Planner = (() => {
               // 同型号可叠货共享同一底面积，足迹按"型号去重"计一次，
               // 避免大量薄板件把地板面积低估，从而避免 Planner 分组 → 扩容兜底的连锁。
               totalFloor: 0,
-              floorModels: new Set()
+              floorModels: new Set(),
+              // 高度预筛：每型号按"同型号独占一层"估算层高（保守），
+              // 防止大量薄板件在体积/足迹内但高度超箱的情况。
+              modelCounts: new Map()
             };
             break;
           }
@@ -208,9 +211,19 @@ const Planner = (() => {
         const itemFloor = item.l * item.w;
         const isNewFloorModel = !stackableGroup.floorModels.has(item.model);
         const nextFloor = stackableGroup.totalFloor + (isNewFloorModel ? itemFloor : 0);
+
+        // 高度估算：本型号加入后的层数 = ceil(总件数 / 每层可放件数)（保守按单层满铺），
+        // 总高 = 各型号层高之和，不允许超过箱高（高度由 0.85 体积系数之外的另一维约束）。
+        const modelCount = (stackableGroup.modelCounts.get(item.model) || 0) + 1;
+        const perLayer = Math.max(1, Math.floor((stackableGroup.container.L * stackableGroup.container.W) / itemFloor));
+        const thisModelLayers = Math.ceil(modelCount / perLayer);
+        const prevModelLayers = Math.ceil((modelCount - 1) / perLayer);
+        const nextHeight = stackableGroup.totalHeight + (thisModelLayers - prevModelLayers) * item.h;
+
         if (stackableGroup.totalVolume + itemVol > maxVol ||
             stackableGroup.totalWeight + item.weight > stackableGroup.container.payload ||
-            nextFloor > stackableGroup.container.L * stackableGroup.container.W) {
+            nextFloor > stackableGroup.container.L * stackableGroup.container.W ||
+            nextHeight > stackableGroup.container.H) {
           assignments.push({
             containerCode: stackableGroup.container.code,
             items: stackableGroup.items,
@@ -224,6 +237,8 @@ const Planner = (() => {
         stackableGroup.totalVolume += itemVol;
         stackableGroup.totalWeight += item.weight;
         stackableGroup.totalFloor = nextFloor;
+        stackableGroup.totalHeight = nextHeight;
+        stackableGroup.modelCounts.set(item.model, modelCount);
         if (isNewFloorModel) stackableGroup.floorModels.add(item.model);
       } else {
         unassigned.push(item);

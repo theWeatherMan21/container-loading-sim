@@ -256,4 +256,37 @@ test('test_kitten_planner_stackable_groups_respect_floor_footprint', () => {
     `100 identical cartons should stay in 1 assignment, got ${cartonPlan.assignments.length}`);
 });
 
+test('test_kitten_planner_stackable_groups_respect_height', () => {
+  // 高薄板：体积/足迹不超但层高远超箱高 → 必须拆组（默认全部可叠放语义）。
+  const boards = [];
+  for (let k = 0; k < 200; k++) {
+    boards.push({ model: 'Board', l: 2.2, w: 1.0, h: 0.3, weight: 50, stackable: true, quantity: 1 });
+  }
+  const plan = Planner.planContainerAssignment(boards, Object.values(CDB.CONTAINER_DB));
+  assert(plan.unassigned.length === 0, `all boards should be assigned, got ${plan.unassigned.length} unassigned`);
+  assert(plan.assignments.length >= 2, `tall boards must split across boxes (height), got ${plan.assignments.length}`);
+  for (const assignment of plan.assignments) {
+    const spec = CDB.CONTAINER_DB[assignment.containerCode];
+    const perModel = new Map();
+    for (const item of assignment.items) {
+      perModel.set(item.model, (perModel.get(item.model) || 0) + 1);
+    }
+    let totalHeight = 0;
+    for (const [model, count] of perModel) {
+      const first = assignment.items.find(i => i.model === model);
+      const perLayer = Math.max(1, Math.floor((spec.L * spec.W) / (first.l * first.w)));
+      totalHeight += Math.ceil(count / perLayer) * first.h;
+    }
+    assert(totalHeight <= spec.H + 1e-6, `assignment height ${totalHeight.toFixed(2)} exceeds ${spec.code} height ${spec.H}`);
+  }
+  // 低薄板 200 件（0.05m 高）：高度不构成约束，应保持 1 箱。
+  const thin = [];
+  for (let k = 0; k < 200; k++) {
+    thin.push({ model: 'Thin', l: 2.2, w: 1.0, h: 0.05, weight: 50, stackable: true, quantity: 1 });
+  }
+  const thinPlan = Planner.planContainerAssignment(thin, Object.values(CDB.CONTAINER_DB));
+  assert(thinPlan.assignments.length === 1 && thinPlan.assignments[0].items.length === 200,
+    `thin boards should stay in 1 assignment, got ${thinPlan.assignments.length}`);
+});
+
 if (!process.exitCode) console.log(`\n${passed} regression tests passed`);
