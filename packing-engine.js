@@ -1628,7 +1628,15 @@ const PackingEngine = (() => {
           return selfCheck(c, spec, tolerance);
         });
         result.checks = allChecks;
-        result.hasErrors = allChecks.some(c => c.errors.length > 0);
+        // fallback 分支同样需要上报未装错误：所有货物都无法分配时（如超限超所有箱型），
+        // 主混合路径的 unplaced 上报在此不生效，缺失会表现为 hasErrors=false 且无任何提示。
+        if (result.unplacedCount > 0) {
+          result.checks.push({
+            errors: [{ type: 'unplaced', message: `${result.unplacedCount} 件货物未能装入任何可用箱型` }],
+            warnings: []
+          });
+        }
+        result.hasErrors = result.checks.some(c => c.errors.length > 0);
         result.hasWarnings = allChecks.some(c => c.warnings.length > 0);
         result.plannerFallback = true;
         return result;
