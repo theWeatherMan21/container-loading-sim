@@ -483,8 +483,11 @@ h3('6.1 容量需求分析');
 for (let n = 1; n <= 12; n++) {
   const specs = Array(n).fill(hq45Spec);
   const m = PE.mixedMultiContainerPack(CARGO, specs, { tolerance: 0.05, sortStrategy: 'smart' });
-  const done = m.totalPlaced === m.totalItems;
-  line(`- **${n}×45HQ**: ${m.totalPlaced}/${m.totalItems} 件 (${(m.totalPlaced/m.totalItems*100).toFixed(1)}%) — 利用率 ${(m.avgUtilization*100).toFixed(1)}%${done ? ' ✅ 全部装入' : ''}`);
+  // 注意：mixedMultiContainerPack 有动态扩容兜底，即使固定 n 箱装不完也会追加箱型直到装完；
+  // 因此"全部装入"必须同时校验实际箱数 === 请求箱数，否则 1×45HQ 也会显示 100% 已装。
+  const done = m.totalPlaced === m.totalItems && m.containerCount === n;
+  const expanded = m.containerCount > n ? `（实际使用 ${m.containerCount} 箱，含扩容补装）` : '';
+  line(`- **${n}×45HQ**: ${m.totalPlaced}/${m.totalItems} 件 (${(m.totalPlaced/m.totalItems*100).toFixed(1)}%) — 利用率 ${(m.avgUtilization*100).toFixed(1)}%${done ? ' ✅ 全部装入' : expanded}`);
   if (done) break;
 }
 
@@ -495,7 +498,7 @@ let neededBoxes = 4;
 for (let n = 1; n <= 15; n++) {
   const specs = Array(n).fill(hq45Spec);
   const m = PE.mixedMultiContainerPack(CARGO, specs, { tolerance: 0.05, sortStrategy: 'smart' });
-  if (m.totalPlaced === m.totalItems) { neededBoxes = n; break; }
+  if (m.totalPlaced === m.totalItems && m.containerCount === n) { neededBoxes = n; break; }
 }
 
 {

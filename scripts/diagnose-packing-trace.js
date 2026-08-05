@@ -45,7 +45,10 @@ console.log('\n─────────────────────�
 console.log('  Box 1: volume-desc');
 console.log('──────────────────────────────────────────\n');
 
-const resultVol = PE.packSingleContainer(testCargo, hq45, { tolerance: 0.05, sortStrategy: 'volume-desc' });
+// packSingleContainer 不展开 quantity，先展开再与混合段同口径对比。
+const expandedTraceCargo = PE.expandItems(testCargo);
+
+const resultVol = PE.packSingleContainer(expandedTraceCargo, hq45, { tolerance: 0.05, sortStrategy: 'volume-desc' });
 console.log(`  已装: ${resultVol.placedItems.length} 件 | 未装: ${resultVol.unplacedItems.length} 件`);
 console.log(`  利用率: ${(resultVol.utilization * 100).toFixed(2)}% | 重量: ${resultVol.totalWeight}kg / ${hq45.payload}kg (${(resultVol.weightUtil * 100).toFixed(2)}%)\n`);
 
@@ -64,7 +67,7 @@ console.log('\n─────────────────────�
 console.log('  Box 1: weight-desc');
 console.log('──────────────────────────────────────────\n');
 
-const resultWt = PE.packSingleContainer(testCargo, hq45, { tolerance: 0.05, sortStrategy: 'weight-desc' });
+const resultWt = PE.packSingleContainer(expandedTraceCargo, hq45, { tolerance: 0.05, sortStrategy: 'weight-desc' });
 console.log(`  已装: ${resultWt.placedItems.length} 件 | 未装: ${resultWt.unplacedItems.length} 件`);
 console.log(`  利用率: ${(resultWt.utilization * 100).toFixed(2)}% | 重量: ${resultWt.totalWeight}kg / ${hq45.payload}kg (${(resultWt.weightUtil * 100).toFixed(2)}%)\n`);
 
@@ -108,7 +111,7 @@ console.log('\n─────────────────────�
 console.log('  对照: 单箱型 20GP');
 console.log('──────────────────────────────────────────\n');
 const gp20 = CDB.CONTAINER_DB['20GP'];
-const result20GP = PE.packSingleContainer(testCargo, gp20, { tolerance: 0.05, sortStrategy: 'volume-desc' });
+const result20GP = PE.packSingleContainer(expandedTraceCargo, gp20, { tolerance: 0.05, sortStrategy: 'volume-desc' });
 console.log(`  已装: ${result20GP.placedItems.length} 件 | 利用率: ${(result20GP.utilization*100).toFixed(2)}% | 重量: ${result20GP.totalWeight}kg/${gp20.payload}kg`);
 for (const p of result20GP.placedItems) {
   console.log(`    ${pad(p.model, 24)} @(${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}) ${p.l.toFixed(2)}×${p.w.toFixed(2)}×${p.h.toFixed(2)}`);

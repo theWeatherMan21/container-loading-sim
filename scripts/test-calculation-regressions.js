@@ -129,4 +129,131 @@ test('test_kitten_invalid_quantity_is_rejected', () => {
   assert(threw, 'invalid quantity was not rejected');
 });
 
+test('test_kitten_layer_pack_rotates_without_threshold_regression', () => {
+  const spec = {
+    code: 'LAYER', nameCN: 'LAYER', L: 2.15, W: 2.95, H: 1.05,
+    doorW: 10, doorH: 10, payload: 100000, volume: 6.66,
+    type: 'standard', allowOverHeight: false, allowOverWidth: false, allowOverLength: false
+  };
+  const item = { model: 'Rect', l: 1.4, w: 1, h: 1, weight: 1, stackable: false, orientationFixed: false, quantity: 1 };
+  const pack = quantity => PE.packSingleContainer(
+    Array.from({ length: quantity }, () => ({ ...item })),
+    spec,
+    { tolerance: 0.01, sortStrategy: 'smart' }
+  );
+  const belowThreshold = pack(9);
+  const atThreshold = pack(10);
+  assert(atThreshold.placedItems.length >= belowThreshold.placedItems.length,
+    `layer threshold regressed from ${belowThreshold.placedItems.length} to ${atThreshold.placedItems.length}`);
+  assert(atThreshold.placedItems.length >= 3, `expected rotated layer packing to place at least 3, got ${atThreshold.placedItems.length}`);
+});
+
+test('test_kitten_layer_pack_respects_bearing_constraint', () => {
+  const spec = {
+    code: 'BEARING', nameCN: 'BEARING', L: 2.1, W: 2.1, H: 1.3,
+    doorW: 10, doorH: 10, payload: 100000, volume: 5.73,
+    type: 'standard', allowOverHeight: false, allowOverWidth: false, allowOverLength: false
+  };
+  const items = [
+    { model: 'Base', l: 2, w: 2, h: 0.2, weight: 1, stackable: true, orientationFixed: true, quantity: 1 },
+    { model: 'HeavyCube', l: 0.5, w: 0.5, h: 0.5, weight: 100, stackable: true, orientationFixed: true, quantity: 10 }
+  ];
+  const result = PE.packSingleContainer(PE.expandItems(items), spec, { tolerance: 0.01, sortStrategy: 'smart' });
+  const heavyOnBase = result.placedItems.filter(item => item.model === 'HeavyCube' && item.z > 0.001);
+  assert(heavyOnBase.length === 0, `expected bearing check to reject heavy layer, placed ${heavyOnBase.length}`);
+
+  const invalid = {
+    ...result,
+    isInterim: true,
+    placedItems: [
+      { model: 'Base', l: 2, w: 2, h: 0.2, x: 0, y: 0, z: 0, weight: 1, stackable: true },
+      { model: 'HeavyCube', l: 0.5, w: 0.5, h: 0.5, x: 0, y: 0, z: 0.2, weight: 100, stackable: true }
+    ],
+    totalWeight: 101,
+    utilization: 0.1,
+    unplacedItems: []
+  };
+  const check = PE.selfCheck(invalid, spec, 0.01);
+  assert(check.errors.some(error => error.type === 'bearingViolation'), 'selfCheck did not report bearingViolation');
+});
+
+test('test_kitten_seeded_multi_start_reaches_four_box_lower_bound', () => {
+  const cargo = [
+    { model: 'Beam', l: 3.8, w: 0.5, h: 0.45, weight: 3200, quantity: 6, stackable: false },
+    { model: 'HVAC', l: 1.85, w: 0.95, h: 2.15, weight: 850, quantity: 4, stackable: false, orientationFixed: true },
+    { model: 'Tile', l: 1.2, w: 1, h: 0.95, weight: 720, quantity: 24, stackable: true },
+    { model: 'Ingot', l: 1.1, w: 1.1, h: 0.7, weight: 2850, quantity: 10, stackable: true },
+    { model: 'Frozen', l: 1.2, w: 0.8, h: 1.2, weight: 550, quantity: 15, stackable: true },
+    { model: 'Transformer', l: 2.8, w: 1.6, h: 2.4, weight: 8500, quantity: 2, stackable: false, orientationFixed: true },
+    { model: 'Furniture', l: 2.2, w: 0.6, h: 0.15, weight: 85, quantity: 40, stackable: true },
+    { model: 'Carton', l: 0.55, w: 0.4, h: 0.35, weight: 15, quantity: 300, stackable: true }
+  ];
+  const options = { tolerance: 0.05, optimizationSeed: 20260805, randomStarts: 8 };
+  const first = PE.multiContainerPack(cargo, CDB.CONTAINER_DB['45HQ'], options);
+  const second = PE.multiContainerPack(cargo, CDB.CONTAINER_DB['45HQ'], options);
+  assert(first.totalPlaced === 401 && first.unplacedCount === 0, `expected all 401 placed, got ${first.totalPlaced}`);
+  assert(first.containerCount === 4, `expected lower bound of 4 boxes, got ${first.containerCount}`);
+  assert(first.optimization.lowerBound === 4, `expected lowerBound=4, got ${first.optimization.lowerBound}`);
+  // 只断言可复现的核心字段；timeUsedMs 是真实耗时，天然不可重复。
+  const stable = ({ strategy, seed, evaluated, lowerBound, randomStarts, timeBudgetMs }) => ({ strategy, seed, evaluated, lowerBound, randomStarts, timeBudgetMs });
+  assert(JSON.stringify(stable(first.optimization)) === JSON.stringify(stable(second.optimization)), 'seeded optimization metadata is not repeatable');
+  assert(first.containers.map(c => c.placedItems.length).join(',') === second.containers.map(c => c.placedItems.length).join(','),
+    'seeded optimization result is not repeatable');
+});
+
+test('test_kitten_avg_utilization_is_volume_weighted', () => {
+  // 2×20GP(40%) + 1×40HQ(80%)：
+  // 算术平均 = 53.3%，容积加权 = (0.4×33.2×2 + 0.8×76.3) / (33.2×2 + 76.3) ≈ 61.4%
+  const containers = [
+    { placedItems: [{}], totalVolume: 13.28, utilization: 0.4 },
+    { placedItems: [{}], totalVolume: 13.28, utilization: 0.4 },
+    { placedItems: [{}], totalVolume: 61.04, utilization: 0.8 }
+  ];
+  const weighted = PE._internal.weightedAvgUtilization(containers);
+  assert(Math.abs(weighted - 87.6 / 142.7) < 1e-6, `expected volume-weighted utilization ≈0.614, got ${weighted}`);
+  assert(Math.abs(weighted - 0.5333) > 0.05, 'weighted average must differ from arithmetic average for mixed sizes');
+  assert(PE._internal.weightedAvgUtilization([]) === 0, 'empty containers should yield 0');
+  assert(PE._internal.weightedAvgUtilization([{ placedItems: [], totalVolume: 0, utilization: 0 }]) === 0, 'all-empty containers should yield 0');
+});
+
+test('test_kitten_optimizer_time_budget_limits_candidates', () => {
+  const cargo = [
+    { model: 'Carton', l: 0.5, w: 0.4, h: 0.3, weight: 10, quantity: 300, stackable: true }
+  ];
+  // 时间预算为 0：只允许评估第一个候选（smart），随后即停止。
+  const result = PE.multiContainerPack(cargo, CDB.CONTAINER_DB['20GP'], {
+    tolerance: 0.05,
+    optimizationTimeMs: 0
+  });
+  assert(result.totalPlaced === 300 && result.unplacedCount === 0, `time-budget result must remain valid: ${result.totalPlaced}/300`);
+  assert(result.optimization.evaluated >= 1, `expected at least the first candidate evaluated, got ${result.optimization.evaluated}`);
+  assert(result.optimization.timeUsedMs >= 0, 'timeUsedMs must be non-negative');
+});
+
+test('test_kitten_planner_stackable_groups_respect_floor_footprint', () => {
+  // 20 种不同型号薄板各 30 件：同型号共享底面积，去重足迹必须不超箱地板。
+  const mixed = [];
+  for (let m = 0; m < 20; m++) {
+    for (let k = 0; k < 30; k++) {
+      mixed.push({ model: `Board${m}`, l: 2.0, w: 0.9 + (m % 3) * 0.1, h: 0.05, weight: 20, stackable: true, quantity: 1 });
+    }
+  }
+  const plan = Planner.planContainerAssignment(mixed, Object.values(CDB.CONTAINER_DB));
+  assert(plan.unassigned.length === 0, `all stackable boards should be assigned, got ${plan.unassigned.length} unassigned`);
+  for (const assignment of plan.assignments) {
+    const spec = CDB.CONTAINER_DB[assignment.containerCode];
+    const footprint = new Map();
+    for (const item of assignment.items) {
+      if (!footprint.has(item.model)) footprint.set(item.model, item.l * item.w);
+    }
+    const totalFootprint = [...footprint.values()].reduce((s, v) => s + v, 0);
+    assert(totalFootprint <= spec.L * spec.W + 1e-6,
+      `assignment floor footprint ${totalFootprint.toFixed(2)} exceeds ${spec.code} floor ${(spec.L * spec.W).toFixed(2)}`);
+  }
+  const cartons = Array.from({ length: 100 }, () => ({ model: 'Carton', l: 0.55, w: 0.4, h: 0.35, weight: 15, stackable: true, quantity: 1 }));
+  const cartonPlan = Planner.planContainerAssignment(cartons, Object.values(CDB.CONTAINER_DB));
+  assert(cartonPlan.assignments.length === 1 && cartonPlan.assignments[0].items.length === 100,
+    `100 identical cartons should stay in 1 assignment, got ${cartonPlan.assignments.length}`);
+});
+
 if (!process.exitCode) console.log(`\n${passed} regression tests passed`);

@@ -33,7 +33,9 @@ for (let i = 0; i < Math.min(20, sorted.length); i++) {
 
 // ── Box 1: smart ──
 console.log('\n=== Box 1: smart ===');
-const r1 = PE.packSingleContainer(cargo, hq45, { tolerance: 0.05, sortStrategy: 'smart' });
+// packSingleContainer 不展开 quantity，必须先展开才能与 4x45HQ 段同口径比较。
+const expandedCargo = PE.expandItems(cargo);
+const r1 = PE.packSingleContainer(expandedCargo, hq45, { tolerance: 0.05, sortStrategy: 'smart' });
 console.log(`已装: ${r1.placedItems.length} 件 | 利用率: ${(r1.utilization * 100).toFixed(1)}% | 重量: ${r1.totalWeight}kg`);
 for (let i = 0; i < r1.placedItems.length; i++) {
   const p = r1.placedItems[i];

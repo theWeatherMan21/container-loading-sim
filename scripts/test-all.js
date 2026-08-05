@@ -12,6 +12,7 @@ const assertSuites = [
   'test-planner.js',                  // Planner 单元
   'test-planner-integration.js',      // Planner + Packer 集成
   'test-all-scenarios.js',            // 全场景
+  'benchmark-optimization.js',        // 多起点优化 vs 基线（跨订单不劣化）
   'quick-check-smart.js',             // smart 策略
   'verify-capacity.js',               // 容量验证
   'diagnose-classification.js',       // 分类诊断
