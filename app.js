@@ -2056,6 +2056,19 @@
         showStep(3);
       });
     }
+
+    // Step 4 "返回配置" / "重新开始"（内联 onclick 兜底绑定）
+    // 这两个按钮没有 .btn-back class，旧代码 initNavigation 未绑定任何监听，
+    // 完全依赖内联 onclick（App.goToStep(3) / App.resetState()）。
+    // 显式绑定后即使内联属性失效也有兜底；重复触发是幂等的（showStep/resetState）。
+    const step4Back = document.querySelector('#step-4 button[onclick*="goToStep(3)"]');
+    if (step4Back) {
+      step4Back.addEventListener('click', () => { showStep(3); });
+    }
+    const step4Restart = document.querySelector('#step-4 button[onclick*="resetState"]');
+    if (step4Restart) {
+      step4Restart.addEventListener('click', () => { App.resetState(); });
+    }
   }
 
   // ═══════════════════════════════════════════
@@ -2128,6 +2141,16 @@
       state.skuOverrides = {};
       state.manualItems = [];
       state._calculating = false;
+      // 清理 3D 视图：释放渲染器/场景/rAF，避免"重新开始"后资源泄漏
+      // （此前遗漏，与 Step 2"重新上传"的清理逻辑对齐）
+      const TV = getTV();
+      if (TV && typeof TV.disposeAll === 'function') {
+        TV.disposeAll();
+      }
+      const viewerContainer = $('three-viewer-container');
+      if (viewerContainer) viewerContainer.innerHTML = '';
+      const resultContainer = $('resultContainer');
+      if (resultContainer) resultContainer.innerHTML = '';
       showStep(1);
     }
   };

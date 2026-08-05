@@ -112,18 +112,22 @@ const Planner = (() => {
 
     for (const item of heavyNonStack) {
       const itemVol = item.l * item.w * item.h;
+      const itemFloor = item.l * item.w;
       let placed = false;
 
       const usableCodes = new Set(filterContainerTypes(item, containerSpecs).map(c => c.code));
 
       // 尝试加入已有组
+      // 不可叠货物受地板面积硬约束（不能叠放），除体积/重量外必须检查 Σ(l×w) ≤ 箱地板
       for (const group of heavyAssignmentGroups) {
         if (usableCodes.has(group.container.code) &&
             group.totalWeight + item.weight <= group.container.payload &&
-            (group.totalVolume + itemVol) <= group.container.L * group.container.W * group.container.H * 0.8) {
+            (group.totalVolume + itemVol) <= group.container.L * group.container.W * group.container.H * 0.8 &&
+            (group.totalFloor + itemFloor) <= group.container.L * group.container.W) {
           group.items.push(item);
           group.totalWeight += item.weight;
           group.totalVolume += itemVol;
+          group.totalFloor += itemFloor;
           placed = true;
           break;
         }
@@ -134,7 +138,8 @@ const Planner = (() => {
         let bestContainer = null;
         for (const c of standardContainers) {
           if (usableCodes.has(c.code) && item.weight <= c.payload &&
-              itemVol <= c.L * c.W * c.H * 0.8) {
+              itemVol <= c.L * c.W * c.H * 0.8 &&
+              itemFloor <= c.L * c.W) {
             bestContainer = c;
             break;
           }
@@ -144,7 +149,8 @@ const Planner = (() => {
             container: bestContainer,
             items: [item],
             totalWeight: item.weight,
-            totalVolume: itemVol
+            totalVolume: itemVol,
+            totalFloor: itemFloor
           });
         } else {
           unassigned.push(item);
@@ -243,12 +249,14 @@ const Planner = (() => {
 
       if (!lightGroup) {
         for (const c of standardContainers) {
-          if (usableCodes.has(c.code) && itemVol <= c.L * c.W * c.H * VOLUME_FACTOR) {
+          if (usableCodes.has(c.code) && itemVol <= c.L * c.W * c.H * VOLUME_FACTOR &&
+              itemFloor <= c.L * c.W) {
             lightGroup = {
               container: c,
               items: [],
               totalVolume: 0,
-              totalWeight: 0
+              totalWeight: 0,
+              totalFloor: 0
             };
             break;
           }
@@ -257,8 +265,10 @@ const Planner = (() => {
 
       if (lightGroup) {
         const maxVol = lightGroup.container.L * lightGroup.container.W * lightGroup.container.H * VOLUME_FACTOR;
+        // 不可叠货物受地板面积硬约束（不能叠放）：Σ(l×w) ≤ 箱地板面积
         if (lightGroup.totalVolume + itemVol > maxVol ||
-            lightGroup.totalWeight + item.weight > lightGroup.container.payload) {
+            lightGroup.totalWeight + item.weight > lightGroup.container.payload ||
+            lightGroup.totalFloor + itemFloor > lightGroup.container.L * lightGroup.container.W) {
           assignments.push({
             containerCode: lightGroup.container.code,
             items: lightGroup.items,
@@ -271,6 +281,7 @@ const Planner = (() => {
         lightGroup.items.push(item);
         lightGroup.totalVolume += itemVol;
         lightGroup.totalWeight += item.weight;
+        lightGroup.totalFloor += itemFloor;
       } else {
         unassigned.push(item);
       }

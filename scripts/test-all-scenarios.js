@@ -231,7 +231,7 @@ for (const scenario of scenarios) {
 logHeader('数据库完整性验证');
 
 const expectedContainers = [
-  '20GP', '40HQ', '45HQ',
+  '20GP', '40GP', '40HQ', '45HQ',
   '20OT', '40OT',
   '20FR', '40FR'
 ];
@@ -251,7 +251,7 @@ const unexpectedCodes = allCodes.filter(c => !expectedContainers.includes(c));
 if (unexpectedCodes.length > 0) {
   logFail(`多余箱型: ${unexpectedCodes.join(', ')}`);
 } else {
-  logOk('箱型数量正确 (13种)');
+  logOk('箱型数量正确 (8种)');
 }
 
 // FR 验证

@@ -49,8 +49,14 @@ const PackingEngine = (() => {
   function cutSpace(space, px, py, pz, pl, pw, ph) {
     const newSpaces = [];
 
+    // 截断占位尺寸到空间边界：
+    // FR 超长货（l > 排布长度 L）贴端放置时，货物伸出箱体之外的部分
+    // 不得参与子空间计算，否则会产生越界空间导致后续货物排布超界。
+    const effPl = Math.min(pl, space.x + space.L - px);
+    const effPw = Math.min(pw, space.y + space.W - py);
+
     // 右方空间 (沿X轴延伸) — 保持完整高度，覆盖空间原始Y范围
-    const rx = px + pl;
+    const rx = px + effPl;
     if (rx < space.x + space.L) {
       newSpaces.push(createSpace(
         rx, space.y, space.z,
@@ -464,6 +470,44 @@ const PackingEngine = (() => {
       }
     }
 
+    // ═══ FR 超长货特殊分支 ═══
+    // 常规空间无法容纳（货物某方向 l > 排布长度 L），但货物本身在有效尺寸上限内
+    // （l ≤ L + 超长余量）：允许贴端（x=0）放置，货物伸出箱体端壁之外的部分
+    // 由 3D 标记"超长"提示（对应 FR 端壁折叠装载场景）。
+    if (!best && container.type === 'flatRack') {
+      const effDims = getEffectiveMaxDims(container, tolerance);
+      for (const o of orientations) {
+        if (o.l <= effDims.maxL + CONSTANTS.EPS &&
+            o.w <= effDims.maxW + CONSTANTS.EPS &&
+            o.h <= effDims.maxH + CONSTANTS.EPS) {
+
+          for (let si = 0; si < emsSpaces.length; si++) {
+            const space = emsSpaces[si];
+            // 必须贴端（x≈0）且贴地（z≈0）：超长货只能从箱内起点伸出
+            if (space.x > CONSTANTS.EPS) continue;
+            if (space.z > CONSTANTS.EPS) continue;
+            if (space.blockedAbove && space.z > CONSTANTS.EPS) continue;
+            if (o.w > space.W + CONSTANTS.EPS || o.h > space.H + CONSTANTS.EPS) continue;
+
+            // 重量检查
+            if (currentWeight + item.weight > container.payload) continue;
+
+            // FR 底板投影检查（超长部分悬出端壁外，但箱内部分必须与地板充分重合）
+            const floorRatio = calcFloorOverlapRatio(space.x, space.y, o.l, o.w, container);
+            if (floorRatio <= CONSTANTS.EPS) continue; // 无交集
+            if (floorRatio < MIN_FR_FLOOR_RATIO) continue; // 箱内投影不足 50%（悬出过多）
+
+            // 评分：贴端贴地贴左最优
+            const score = dblScore(space.x, space.y, space.z, container, effDims);
+            if (score > bestScore) {
+              bestScore = score;
+              best = { spaceIndex: si, orientation: o, x: space.x, y: space.y, z: space.z, overLength: o.l > container.L + CONSTANTS.EPS };
+            }
+          }
+        }
+      }
+    }
+
     return best;
   }
 
@@ -482,7 +526,8 @@ const PackingEngine = (() => {
       weight: item.weight,
       stackable: item.stackable !== false,
       colorIndex: item.colorIndex || 0,
-      origL: item.l, origW: item.w, origH: item.h
+      origL: item.l, origW: item.w, origH: item.h,
+      overLength: best.overLength || false   // FR 超长货（伸出端壁，需标记）
     };
   }
 
@@ -651,9 +696,9 @@ const PackingEngine = (() => {
    * 从已放置货物重建EMS空间列表
    */
   function buildEMSFromPlaced(placedItems, container, emsSpaces, tolerance) {
-    // 使用与 packSingleContainer 一致的有效尺寸（FR 含现实超限上限）
-    const effDims = getEffectiveMaxDims(container, tolerance);
-    emsSpaces.push(createSpace(0, 0, 0, effDims.maxL, effDims.maxW, effDims.maxH, false));
+    // 排布范围与 packSingleContainer 一致（FR 排布长度 = 真实内长）
+    const packDims = getPackSpaceDims(container, tolerance);
+    emsSpaces.push(createSpace(0, 0, 0, packDims.maxL, packDims.maxW, packDims.maxH, false));
 
     for (const item of placedItems) {
       // 找到包含该货物的空间并切割
@@ -692,6 +737,22 @@ const PackingEngine = (() => {
   // ═══════════════════════════════════════════
 
   /**
+   * 获取排布空间的有效尺寸（EMS 初始空间范围）
+   *
+   * 与 getEffectiveMaxDims 的区别：
+   * - 货物尺寸上限（maxL）允许 FR 超长货（L + 超长余量）通过尺寸校验；
+   * - 但排布空间（packL）严格限制为真实内长 L —— 普通货物不允许排布超界，
+   *   只有货物本身尺寸超长（l > L）时由 findBestPlacement 的超长分支贴端放置。
+   */
+  function getPackSpaceDims(container, tolerance) {
+    const effDims = getEffectiveMaxDims(container, tolerance);
+    if (container.type === 'flatRack') {
+      return { maxL: container.L, maxW: effDims.maxW, maxH: effDims.maxH };
+    }
+    return effDims;
+  }
+
+  /**
    * 对单箱执行3D装箱
    * @param {Array} cargoItems - 展开后的货物列表（每件一个条目）
    * @param {object} container - 箱型规格
@@ -707,14 +768,15 @@ const PackingEngine = (() => {
     // 排序
     const sorted = sortItems([...cargoItems], sortStrategy);
 
-    // 初始化EMS（FR 使用含现实超限上限的有效尺寸）
-    let emsSpaces = [createSpace(0, 0, 0, effDims.maxL, effDims.maxW, effDims.maxH, false)];
+    // 初始化EMS（排布范围：标准柜=有效尺寸，FR=真实内长，超长货由超长分支贴端处理）
+    const packDims = getPackSpaceDims(container, tolerance);
+    let emsSpaces = [createSpace(0, 0, 0, packDims.maxL, packDims.maxW, packDims.maxH, false)];
     const placedItems = [];
     let currentWeight = 0;
     const unplacedItems = [];
 
-    // 按型号分组
-    const groups = groupByModel(sorted);
+    // 按型号分组；部分候选策略在组级别排序，避免 quantity 大的型号被单件评分低估。
+    const groups = orderGroups(groupByModel(sorted), sortStrategy);
 
     for (const g of groups) {
       const item = g.items[0];
@@ -908,12 +970,60 @@ const PackingEngine = (() => {
       remaining = newRemaining;
     }
 
+    // ═══ 动态扩容兜底：保证"能装必装" ═══
+    // 核心原则：未装只允许发生在"单件尺寸/约束超出所有箱型"时。
+    // 若剩余货物仍能装入某个可用箱型，则追加该箱型继续装载，
+    // 直到全部装完，或剩余货物确实无法装入任何箱型。
+    // 箱型选择策略：容积升序 + 全装优先（优先选能一次装完的最小箱，避免浪费大箱）。
+    if (remaining.length > 0) {
+      const MAX_EXPAND_ROUNDS = 30; // 扩容轮次上限（防异常死循环）
+      const expandOptions = { ...options };
+      if (useStackableFirst) expandOptions.sortStrategy = 'stackable-first';
+      // 去重并按容积升序排列（从小到大尝试）
+      const uniqueSpecs = [];
+      const seenCodes = new Set();
+      for (const spec of containerSpecs) {
+        if (!seenCodes.has(spec.code)) { seenCodes.add(spec.code); uniqueSpecs.push(spec); }
+      }
+      uniqueSpecs.sort((a, b) => (a.L * a.W * a.H) - (b.L * b.W * b.H));
+
+      let expanded = true;
+      for (let round = 0; round < MAX_EXPAND_ROUNDS && remaining.length > 0 && expanded; round++) {
+        expanded = false;
+        // 1) 全装优先：找能一次装下全部剩余的最小容积箱型
+        let best = null;
+        for (const spec of uniqueSpecs) {
+          const r = packSingleContainer(remaining, spec, expandOptions);
+          if (r.placedItems.length === 0) continue;
+          if (r.placedItems.length === remaining.length) {
+            best = { spec, r };
+            break; // 全装即最优（最小容积优先）
+          }
+          // 2) 次优：记录装下最多件的箱型
+          if (!best || r.placedItems.length > best.r.placedItems.length) {
+            best = { spec, r };
+          }
+        }
+        if (best) {
+          containers.push({
+            ...best.r,
+            containerCode: best.spec.code || best.r.containerCode || 'UNKNOWN',
+            containerName: best.spec.nameCN || best.spec.name || '未知箱型',
+            isExpand: true // 扩容箱标记
+          });
+          totalPlaced += best.r.placedItems.length;
+          totalVolumePlaced += best.r.totalVolume;
+          totalWeightLoaded += best.r.totalWeight;
+          remaining = best.r.unplacedItems.map(u => ({ ...u, quantity: 1 }));
+          expanded = true;
+        }
+      }
+    }
+
     // 过滤空箱（未装入任何货物的箱型）
     const nonEmptyContainers = containers.filter(c => c.placedItems.length > 0);
 
-    const avgUtilization = nonEmptyContainers.length > 0
-      ? nonEmptyContainers.reduce((s, c) => s + c.utilization, 0) / nonEmptyContainers.length
-      : 0;
+    const avgUtilization = weightedAvgUtilization(nonEmptyContainers);
 
     if (totalPlaced + remaining.length !== totalInputItems) {
       throw new Error(`混合装箱账目不一致：输入${totalInputItems}件，已装${totalPlaced}件，未装${remaining.length}件`);
@@ -1373,7 +1483,7 @@ const PackingEngine = (() => {
       // 逐组调用 Packer 试装；每组对应一个候选箱，不能产出比用户选择更多的箱子。
       // 某组一箱装不下时，剩余件留在未装列表，由最终结果级统一上报。
       const containers = [];
-      const allUnplaced = [...plan.unassigned];
+      let allUnplaced = [...plan.unassigned];
       const availableByCode = new Map(mixedContainers.map(spec => [spec.code, spec]));
 
       for (const assignment of plan.assignments) {

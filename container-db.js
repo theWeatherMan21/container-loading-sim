@@ -16,10 +16,19 @@ const CONTAINER_DB = {
   },
   '40HQ': {
     code: '40HQ', name: '40尺高柜', nameCN: '40尺高柜',
-    L: 12.032, W: 2.432, H: 2.700,
+    L: 12.032, W: 2.352, H: 2.700,
     doorW: 2.340, doorH: 2.597,
     payload: 28650,
     volume: 76.3,
+    type: 'standard',
+    allowOverHeight: false, allowOverWidth: false, allowOverLength: false
+  },
+  '40GP': {
+    code: '40GP', name: '40尺普柜', nameCN: '40尺普柜',
+    L: 12.032, W: 2.352, H: 2.395,
+    doorW: 2.340, doorH: 2.292,
+    payload: 28800,
+    volume: 67.7,
     type: 'standard',
     allowOverHeight: false, allowOverWidth: false, allowOverLength: false
   },
@@ -46,10 +55,10 @@ const CONTAINER_DB = {
   },
   '40OT': {
     code: '40OT', name: '40尺开顶柜', nameCN: '40尺开顶',
-    L: 12.030, W: 2.350, H: 2.377,
+    L: 12.029, W: 2.352, H: 2.683,
     doorW: 2.338, doorH: Infinity,
-    payload: 26630,
-    volume: 66.4,
+    payload: 28250,
+    volume: 74.9,
     type: 'openTop',
     allowOverHeight: true, maxOverHeight: 0.5,
     allowOverWidth: false, allowOverLength: false
@@ -82,8 +91,8 @@ const CONTAINER_DB = {
 
 /**
  * 箱型说明（尺寸/载重以 Hapag-Lloyd Container Specification 为准）：
- * - 标准柜 (standard)：20GP/40HQ/45HQ — 有门约束，不允许超限
- * - 开顶柜 (openTop)：20OT/40OT — 门高=∞（吊装），门宽约束有效，允许超高0.5m
+ * - 标准柜 (standard)：20GP/40GP/40HQ/45HQ — 有门约束，不允许超限
+ * - 开顶柜 (openTop)：20OT/40OT — 门高=∞（吊装），门宽约束有效，允许超高0.5m（40OT 为 9'6" 高柜规格）
  * - 框架柜 (flatRack)：20FR/40FR — 无门无侧壁，可超长0.5m/超宽0.3m/超高0.5m
  */
 

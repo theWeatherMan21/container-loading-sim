@@ -207,6 +207,18 @@ function renderContainerBox(group, containerSpec) {
     bottom.rotation.x = -Math.PI / 2;
     bottom.position.set(0, -H * SCALE / 2, 0);
     group.add(bottom);
+    // 框架柜端壁：无顶无侧壁，但长度方向两端（箱门端/箱尾端）的壁存在
+    // （Hapag-Lloyd: Flat/Platform with flush folding end walls）
+    const endMat = new THREE.MeshPhongMaterial({ color: 0x8B7355, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false });
+    const frontWall = new THREE.Mesh(new THREE.PlaneGeometry(W * SCALE, H * SCALE), endMat);
+    frontWall.rotation.y = Math.PI / 2;
+    frontWall.position.set(L * SCALE / 2, 0, 0);
+    group.add(frontWall);
+    const backWall = new THREE.Mesh(new THREE.PlaneGeometry(W * SCALE, H * SCALE), endMat);
+    backWall.rotation.y = Math.PI / 2;
+    backWall.position.set(-L * SCALE / 2, 0, 0);
+    group.add(backWall);
+    // 端壁角柱
     const pillarGeo = new THREE.BoxGeometry(0.1, H * SCALE, W * SCALE);
     const pillarMat = new THREE.MeshPhongMaterial({ color: 0x8B7355, transparent: true, opacity: 0.4 });
     const p1 = new THREE.Mesh(pillarGeo, pillarMat);
@@ -238,11 +250,14 @@ function renderContainerBox(group, containerSpec) {
   // FR 无门约束跳过门标记；OT 门高=∞ 使用箱高占位
   if (containerSpec.type !== 'flatRack') {
     const doorH = Math.min(containerSpec.doorH !== Infinity ? containerSpec.doorH : H, H);
+    // 修复：门框改为 2cm 薄片并贴箱体外表面（此前厚度=L×0.02 且居中，凸进箱内 0.12m，
+    // 导致贴端放置的货物模型插入门框形成"卡进箱门"的交叉视觉效果）
+    const doorThickness = 0.02;
     const doorMarker = new THREE.Mesh(
-      new THREE.BoxGeometry(L * SCALE * 0.02, doorH * SCALE, (containerSpec.doorW !== Infinity ? containerSpec.doorW : W) * SCALE),
+      new THREE.BoxGeometry(doorThickness, doorH * SCALE, (containerSpec.doorW !== Infinity ? containerSpec.doorW : W) * SCALE),
       new THREE.MeshPhongMaterial({ color: 0xffcc00, transparent: true, opacity: 0.3 })
     );
-    doorMarker.position.set(L * SCALE / 2, 0, 0);
+    doorMarker.position.set(L * SCALE / 2 + doorThickness / 2, 0, 0);
     group.add(doorMarker);
   }
 
@@ -482,14 +497,15 @@ function renderCargo(group, placedItems, containerSpec, containerIndex = 0) {
         group.add(topMesh);
       }
 
-      // 异常检测
+      // 异常检测：尺寸超限 OR 放置位置超界（双重判定）
+      // 修复：此前只查尺寸（l > L），位置超界（x+l > L）的货物被静默渲染穿出箱体
       const origDims = [item.origL, item.origW, item.origH].filter(Boolean);
       const isRotated = origDims.length === 3 && (
         origDims[0] !== l || origDims[1] !== w || origDims[2] !== h
       );
-      const isOverLength = l > containerSpec.L + 0.01;
-      const isOverWidth = w > containerSpec.W + 0.01;
-      const isOverHeight = h > containerSpec.H + 0.01;
+      const isOverLength = l > containerSpec.L + 0.01 || x + l > containerSpec.L + 0.01;
+      const isOverWidth = w > containerSpec.W + 0.01 || y + w > containerSpec.W + 0.01;
+      const isOverHeight = h > containerSpec.H + 0.01 || z + h > containerSpec.H + 0.01;
       const isOverSize = isOverLength || isOverWidth || isOverHeight;
       const isAbnormal = isOverSize || isRotated || !stackable;
 
@@ -548,11 +564,20 @@ function setupCameraRenderer(scene, canvasId, containerSpec) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
-  const width = canvas.clientWidth || 800;
-  const height = canvas.clientHeight || 600;
+  // 修复：wrapper 尚为 display:none 时 canvas.clientWidth/Height 均为 0，
+  // 旧代码 fallback 800×600 会把 canvas CSS 固定为 800×600，溢出容器
+  // （容器 ~858×500）导致 3D 底部裁切、canvas 覆盖下方按钮区域。
+  // 改为读取容器（parentEl）尺寸，canvas 与容器严格贴合。
+  const width = canvas.clientWidth || (parentEl ? parentEl.clientWidth : 0) || 800;
+  const height = canvas.clientHeight || (parentEl ? parentEl.clientHeight : 0) || 600;
+  console.log(`[3D Diag] setupCameraRenderer ${canvasId}: canvas.client=${canvas.clientWidth}x${canvas.clientHeight}, parentEl=${parentEl ? parentEl.clientWidth + 'x' + parentEl.clientHeight : 'null'}, → ${width}x${height}`);
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
-  renderer.setSize(width, height);
+  // 修复：updateStyle=false —— 不覆盖 canvas 的 CSS 尺寸（width:100%;height:100%）。
+  // 3D 构建时 step-4 尚为 hidden，容器/画布 clientWidth=0，旧代码 setSize(800,600)
+  // 会把 canvas CSS 固定为 800×600，导致 canvas 溢出容器、覆盖下方按钮、3D 底部裁切。
+  // 保持 CSS 100% 后，wrapper 显示时 canvas 自动贴合容器，ResizeObserver 再校正渲染缓冲。
+  renderer.setSize(width, height, false);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.shadowMap.enabled = false;
   renderers[canvasId] = renderer;
