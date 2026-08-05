@@ -289,4 +289,25 @@ test('test_kitten_planner_stackable_groups_respect_height', () => {
     `thin boards should stay in 1 assignment, got ${thinPlan.assignments.length}`);
 });
 
+test('test_kitten_mixed_path_never_loses_partial_unplaced', () => {
+  // 构造"Planner 分组乐观 → 组内 3D 装不完 → 部分未装"的场景：
+  // 可叠货聚合组（Tile+Carton）体积卡在 0.85 系数边界，3D 实际装不下全部。
+  // 修复前：未装件按 model 名去重列表计数，只找回 1 件，其余静默消失 → 账目抛错或丢件。
+  const items = [
+    { model: 'Beam', l: 3.8, w: 0.5, h: 0.45, weight: 3200, quantity: 6, stackable: false },
+    { model: 'Tile', l: 1.2, w: 1.0, h: 0.95, weight: 720, quantity: 24, stackable: true },
+    { model: 'Carton', l: 0.55, w: 0.4, h: 0.35, weight: 15, quantity: 300, stackable: true },
+    { model: 'Transformer', l: 2.8, w: 1.6, h: 2.4, weight: 8500, quantity: 2, stackable: false, orientationFixed: true }
+  ];
+  const result = PE.calculate(items, null, {
+    tolerance: 0.05,
+    mixedContainers: Object.values(CDB.CONTAINER_DB),
+    optimizationSeed: 20260805
+  });
+  const totalInput = items.reduce((s, i) => s + i.quantity, 0);
+  assert(result.totalPlaced + result.unplacedCount === totalInput,
+    `accounting broken: ${result.totalPlaced} placed + ${result.unplacedCount} unplaced != ${totalInput}`);
+  assert(result.hasErrors === false, `unexpected errors: ${JSON.stringify(result.checks?.map(c => c.errors))}`);
+});
+
 if (!process.exitCode) console.log(`\n${passed} regression tests passed`);

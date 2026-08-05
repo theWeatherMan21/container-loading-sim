@@ -972,9 +972,10 @@ const PackingEngine = (() => {
   }
 
   function multiContainerPack(allItems, containerSpec, options = {}) {
+    // maxContainers 不再禁用优化：Planner 混合路径以 maxContainers=1 保留"每组一箱"语义，
+    // 但组内装载顺序仍应多起点择优（减少未装件 → 减少扩容兜底）。
     const shouldOptimize = options.optimize !== false &&
-      options.sortStrategy == null &&
-      options.maxContainers == null;
+      options.sortStrategy == null;
     if (!shouldOptimize) return multiContainerPackOnce(allItems, containerSpec, options);
 
     const lowerBound = calculateContainerLowerBound(allItems, containerSpec);
@@ -1648,8 +1649,8 @@ const PackingEngine = (() => {
 
         const assignmentResult = multiContainerPack(assignment.items, spec, {
           tolerance,
-          sortStrategy: 'smart',
-          maxContainers: 1
+          maxContainers: 1,
+          optimizationSeed: options.optimizationSeed
         });
 
         for (const packedContainer of assignmentResult.containers) {
@@ -1663,16 +1664,27 @@ const PackingEngine = (() => {
         }
 
         if (assignmentResult.unplacedCount > 0) {
-          const packedRefs = new Set(assignmentResult.containers.flatMap(container => container.placedItems));
-          const remainingByModel = new Map();
-          for (const model of assignmentResult.unplacedItems) {
-            remainingByModel.set(model, (remainingByModel.get(model) || 0) + 1);
+          // 按"输入件数 - 已装件数"差量找回未装件。
+          // 不能用 unplacedItems（model 名去重列表）计数——它会丢失数量，
+          // 例如 300 件 Carton 装 280 件时只剩 ['Carton']，导致 19 件静默消失。
+          const placedByModel = new Map();
+          for (const packed of assignmentResult.containers) {
+            for (const item of packed.placedItems) {
+              placedByModel.set(item.model, (placedByModel.get(item.model) || 0) + 1);
+            }
+          }
+          const missingByModel = new Map();
+          for (const item of assignment.items) {
+            missingByModel.set(item.model, (missingByModel.get(item.model) || 0) + 1);
+          }
+          for (const [model, count] of missingByModel) {
+            missingByModel.set(model, count - (placedByModel.get(model) || 0));
           }
           for (const item of assignment.items) {
-            const count = remainingByModel.get(item.model) || 0;
-            if (count > 0 && !packedRefs.has(item)) {
+            const missing = missingByModel.get(item.model) || 0;
+            if (missing > 0) {
               allUnplaced.push(item);
-              remainingByModel.set(item.model, count - 1);
+              missingByModel.set(item.model, missing - 1);
             }
           }
         }
