@@ -30,6 +30,12 @@ coverage/
 # Generated test reports
 test-reports/
 
+# Desktop build artifacts
+*.dmg
+*.exe
+*.msi
+*.app
+
 # Auto-downloaded vendor
 vendor/html2canvas.min.js
 
