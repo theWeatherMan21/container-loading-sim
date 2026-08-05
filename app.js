@@ -1625,10 +1625,15 @@
     const actualBoxes = result.containerCount;
     const hasRecommendationGap = recommendedBoxes > actualBoxes;
 
+    // 动态扩容补装箱：Planner 分组低估箱数后追加，不是"优化省箱"，需要向用户明示
+    const expandCount = (result.containers || []).filter(c => c.isExpand).length;
+    const boxHint = hasRecommendationGap
+      ? `推荐${recommendedBoxes}箱（体积估算×1.3余量），实际EMS算法优化为${actualBoxes}箱`
+      : (expandCount > 0 ? `实际使用${actualBoxes}箱，其中${expandCount}箱为扩容补装（Planner 分组低估箱数）` : null);
+
     const totalItems = result.totalItems || (result.totalPlaced + (result.unplacedCount || 0));
     const cards = [
-      { label: '所需箱数', value: actualBoxes, unit: '个', color: '#8FA39B',
-        hint: hasRecommendationGap ? `推荐${recommendedBoxes}箱（体积估算×1.3余量），实际EMS算法优化为${actualBoxes}箱` : null },
+      { label: '所需箱数', value: actualBoxes, unit: '个', color: '#8FA39B', hint: boxHint },
       { label: '平均利用率', value: (result.avgUtilization * 100).toFixed(1), unit: '%', color: '#8B9E8B' },
       { label: '总装载重量', value: (result.totalWeightLoaded / 1000).toFixed(2), unit: '吨', color: '#B8A89A' },
       { label: '已装件数', value: `${result.totalPlaced}`, unit: `/ ${totalItems} 件`, color: '#9C8B7D',
@@ -1739,7 +1744,7 @@
 
     detailEl.innerHTML = `
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
-        <span><strong>箱型：</strong>${c.containerCode}</span>
+        <span><strong>箱型：</strong>${c.containerCode}${c.isExpand ? ' <span style="color:#8B7516;background:#FFF9E6;border:1px solid #E8D5A0;border-radius:6px;padding:1px 6px;font-size:11px;">扩容补装</span>' : ''}${c.plannerReason ? `<span style="color:#7A706B;font-size:11px;">${escapeHtml(c.plannerReason)}</span>` : ''}</span>
         <span><strong>装载件数：</strong>${c.placedItems.length}</span>
         <span><strong>${utilText}</strong></span>
         <span><strong>载重利用率：</strong>${(c.weightUtil * 100).toFixed(1)}%</span>
@@ -1775,6 +1780,13 @@
           allWarnings.push(`[箱${i + 1}] ${warn.message}`);
         }
       }
+    }
+
+    // 承重/支撑类错误提供业务可读解释：通常是下层货物承压能力不足，而不是"装不下"。
+    const bearingErrorCount = (result.checks || []).reduce((sum, ch) =>
+      sum + ch.errors.filter(e => e.type === 'bearingViolation' || e.type === 'supportViolation' || e.type === 'cornerViolation').length, 0);
+    if (bearingErrorCount > 0) {
+      allErrors.push(`[叠放约束] ${bearingErrorCount} 处叠放因支撑/承重不足被拒绝。请检查下层货物是否可承重（或标记为不可叠放），避免将重货压在轻货上。`);
     }
 
     if (result.unplacedCount > 0) {
