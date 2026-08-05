@@ -1462,6 +1462,43 @@
       const recommendation = CDB.autoRecommend(state.items, state.tolerance);
       console.log('[refreshContainerRecommendation] recommendation:', recommendation);
 
+      // 实际装箱预演：autoRecommend 只看单件适配，不验证真实箱数。
+      // 对 primary + alternatives 跑多起点装箱，若某替代箱实际箱数更少（如 20FR×3 vs 40FR×1），
+      // 提升该箱型为推荐，并在 reasoning 中说明预演依据。
+      if (recommendation && recommendation.type === 'single' && state.items && state.items.length > 0) {
+        const candidates = [recommendation.primary];
+        if (recommendation.alternatives && recommendation.alternatives.length > 0) {
+          candidates.push(...recommendation.alternatives);
+        }
+        // 只对"单件适配但可能多箱"的场景做预演：货物数量 ≥2 时才值得比较
+        const totalQty = state.items.reduce((s, i) => s + (i.quantity || 1), 0);
+        if (totalQty >= 2) {
+          try {
+            const simulation = PE.simulateContainerOptions(state.items, candidates, {
+              tolerance: state.tolerance,
+              optimizationSeed: 20260805,
+              randomStarts: 8,
+              optimizationTimeMs: 3000
+            });
+            console.log('[refreshContainerRecommendation] simulation:', simulation.map(s => `${s.code}:${s.containerCount}箱`).join(', '));
+            const bestSim = simulation.find(s => s.feasible);
+            if (bestSim && bestSim.code !== recommendation.primary.code &&
+                bestSim.containerCount < (simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount) {
+              const promoted = CDB.CONTAINER_DB[bestSim.code];
+              if (promoted) {
+                recommendation.primary = promoted;
+                recommendation.reasoning =
+                  `实际装箱预演：${bestSim.code} 仅需 ${bestSim.containerCount} 箱装完，` +
+                  `优于原推荐 ${recommendation.primary.code}（需 ${(simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount || '?'} 箱）。`;
+                recommendation.promotedBySimulation = true;
+              }
+            }
+          } catch (simErr) {
+            console.warn('[refreshContainerRecommendation] simulation failed:', simErr.message);
+          }
+        }
+      }
+
       if (!recommendation || recommendation.type === 'failed') {
         renderFailedRecommendation(recEl, altEl);
       } else if (recommendation.type === 'mixed') {

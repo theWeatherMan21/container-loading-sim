@@ -29,8 +29,8 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const runtime = loadRuntime(['container-db.js', 'planner.js', 'packing-engine.js']);
-const { ContainerDB: CDB, Planner, PackingEngine: PE } = runtime;
+const runtime = loadRuntime(['container-db.js', 'field-parser.js', 'planner.js', 'packing-engine.js']);
+const { ContainerDB: CDB, FieldParser: FP, Planner, PackingEngine: PE } = runtime;
 
 test('test_kitten_planner_respects_available_containers', () => {
   const item = { model: 'Oversize', l: 2.8, w: 1.6, h: 2.4, quantity: 1, weight: 8500, stackable: false, orientationFixed: true };
@@ -318,6 +318,46 @@ test('test_kitten_mixed_fallback_reports_unplaced_error', () => {
   assert(result.unplacedCount === 1, `expected 1 unplaced, got ${result.unplacedCount}`);
   assert(result.hasErrors === true, 'fallback path must surface unplaced as error');
   assert((result.checks || []).some(c => c.errors.some(e => e.type === 'unplaced')), 'checks must contain unplaced error');
+});
+
+test('test_kitten_infer_unit_mm_for_industrial_dimensions', () => {
+  // 2500X2750X2800 这类工业装箱单尺寸应推断为 mm，而不是 cm。
+  // 修复前：混合采样 avg≈1454 < 2000 且 max=3100 < 5000 → 误判 cm（25m 巨物）。
+  assert(FP.inferUnit([2500, 2750, 2800]) === 'mm', 'large industrial dims must infer mm');
+  assert(FP.inferUnit([2200, 1530, 860]) === 'mm', 'mixed industrial dims must infer mm');
+  assert(FP.inferUnit([2350, 430, 2150]) === 'mm', 'industrial dims with min>=100 and max>=1000 must infer mm');
+  // 常规 cm 尺寸不应误判为 mm
+  assert(FP.inferUnit([80, 60, 50]) === 'cm', 'small cabinet dims should stay cm');
+  assert(FP.inferUnit([1.2, 0.8, 0.6]) === 'm', 'meter dims stay m');
+  // 900mm 边界：max < 1000 时保持 cm（当前阈值设计），避免误伤
+  assert(FP.inferUnit([900, 700, 700]) === 'cm', 'sub-1000 dims stay cm by threshold design');
+});
+
+test('test_kitten_simulate_container_options_picks_40fr', () => {
+  // AKSU 场景：单件都能进 20FR，但 40FR 实际装箱明显优于 20FR。
+  // 预演的核心价值是相对比较（40FR 箱数 ≤ 20FR），而非保证找到 1 箱珍珠解。
+  const items = [
+    { model: '真空室', l: 2.5, w: 2.75, h: 2.8, weight: 7500, quantity: 1, stackable: false },
+    { model: '高阀', l: 2.2, w: 1.53, h: 0.86, weight: 1000, quantity: 1, stackable: false },
+    { model: '70泵', l: 0.9, w: 0.7, h: 0.7, weight: 360, quantity: 1, stackable: true },
+    { model: '30泵', l: 1.5, w: 0.67, h: 0.7, weight: 450, quantity: 1, stackable: true },
+    { model: '真空泵组', l: 3.1, w: 1.03, h: 1.95, weight: 2000, quantity: 1, stackable: false },
+    { model: 'KT800', l: 1.8, w: 1.15, h: 1.9, weight: 2000, quantity: 2, stackable: false },
+    { model: '控制柜', l: 2.7, w: 0.8, h: 2.2, weight: 1000, quantity: 1, stackable: false },
+    { model: '炉体底架', l: 2.35, w: 0.43, h: 2.15, weight: 300, quantity: 1, stackable: false },
+    { model: '分子泵', l: 0.56, w: 0.56, h: 0.65, weight: 200, quantity: 2, stackable: true },
+    { model: '偏压电源', l: 0.94, w: 0.55, h: 1.0, weight: 80, quantity: 1, stackable: true }
+  ];
+  const sim = PE.simulateContainerOptions(items, [CDB.CONTAINER_DB['20FR'], CDB.CONTAINER_DB['40FR']], {
+    tolerance: 0.05, optimizationSeed: 20260805, optimizationTimeMs: 15000
+  });
+  const fr40 = sim.find(s => s.code === '40FR');
+  const fr20 = sim.find(s => s.code === '20FR');
+  assert(fr40 && fr20, 'both 20FR and 40FR must be simulated');
+  assert(fr40.totalPlaced === 12 && fr20.totalPlaced === 12, 'both must pack all 12 items');
+  assert(fr40.containerCount <= fr20.containerCount,
+    `40FR must not need more boxes than 20FR: ${fr40.containerCount} vs ${fr20.containerCount}`);
+  assert(sim[0].code === '40FR', `expected 40FR first in sorted results, got ${sim[0].code}`);
 });
 
 if (!process.exitCode) console.log(`\n${passed} regression tests passed`);

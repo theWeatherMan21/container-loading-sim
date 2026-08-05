@@ -939,6 +939,19 @@ const PackingEngine = (() => {
     return groups.flatMap(group => group.items);
   }
 
+  /**
+   * 逐件洗牌（非组级）：大件混装场景（如 FR 超宽超高件）需要把关键大件
+   * 插在特定位置才能找到紧凑排布。组级洗牌只改变组间顺序，无法覆盖这类解。
+   */
+  function shuffleItems(items, random) {
+    const result = items.map(i => ({ ...i }));
+    for (let i = result.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [result[i], result[j]] = [result[j], result[i]];
+    }
+    return result;
+  }
+
   function calculateContainerLowerBound(allItems, containerSpec) {
     const expanded = expandItems(allItems);
     const totalWeight = expanded.reduce((sum, item) => sum + item.weight, 0);
@@ -1000,11 +1013,20 @@ const PackingEngine = (() => {
     ];
 
     for (let i = 0; i < randomStarts; i++) {
-      candidates.push({
-        name: `seeded-group-shuffle-${i + 1}`,
-        items: shuffleGroups(expanded, random),
-        options: { ...options, sortStrategy: 'input-order', optimize: false }
-      });
+      // 交替使用组级洗牌与逐件洗牌：组级保留同型号连续性，逐件覆盖大件插位场景。
+      if (i % 2 === 0) {
+        candidates.push({
+          name: `seeded-group-shuffle-${i + 1}`,
+          items: shuffleGroups(expanded, random),
+          options: { ...options, sortStrategy: 'input-order', optimize: false }
+        });
+      } else {
+        candidates.push({
+          name: `seeded-item-shuffle-${i + 1}`,
+          items: shuffleItems(expanded, random),
+          options: { ...options, sortStrategy: 'input-order', optimize: false }
+        });
+      }
     }
 
     let best = null;
@@ -1837,12 +1859,72 @@ const PackingEngine = (() => {
     return result;
   }
 
+  /**
+   * 箱型实际装箱预演：对每个候选箱型跑多起点装箱，比较真实所需箱数。
+   *
+   * 推荐层（autoRecommend）只检查"单件尺寸适配 + 总重"，不验证实际排布能力，
+   * 会出现"单件都能进 20FR，但实际要 3 箱，而 40FR 只需 1 箱"的误导。
+   * 本函数用优化器对每个候选箱型做真实装箱，返回按箱数/未装件数排序的对比，
+   * 供 UI 在推荐时择优。
+   *
+   * @param {Array} items - 货物列表（含 quantity）
+   * @param {Array} containerSpecs - 候选箱型规格列表
+   * @param {object} options - { tolerance, optimizationSeed, randomStarts, optimizationTimeMs }
+   * @returns {Array<{code, nameCN, containerCount, totalPlaced, unplacedCount, avgUtilization, feasible}>}
+   */
+  function simulateContainerOptions(items, containerSpecs, options = {}) {
+    const results = [];
+    // 预演需要比默认更强的搜索：单件适配不代表实际能装下，
+    // 大件 + FR 悬出场景需要较多逐件洗牌才能找到紧凑排布（如 40FR 一箱 12 件）。
+    const simRandomStarts = Number.isInteger(options.randomStarts) ? options.randomStarts : 60;
+    const simTimeMs = Number.isFinite(options.optimizationTimeMs) ? options.optimizationTimeMs : 8000;
+    for (const spec of containerSpecs) {
+      if (!spec) continue;
+      try {
+        const result = multiContainerPack(items, spec, {
+          tolerance: options.tolerance == null ? 0.05 : options.tolerance,
+          optimizationSeed: options.optimizationSeed,
+          randomStarts: simRandomStarts,
+          optimizationTimeMs: simTimeMs
+        });
+        results.push({
+          code: spec.code,
+          nameCN: spec.nameCN || spec.name || spec.code,
+          containerCount: result.containerCount,
+          totalPlaced: result.totalPlaced,
+          unplacedCount: result.unplacedCount,
+          avgUtilization: result.avgUtilization,
+          feasible: result.unplacedCount === 0
+        });
+      } catch (err) {
+        results.push({
+          code: spec.code,
+          nameCN: spec.nameCN || spec.name || spec.code,
+          containerCount: Infinity,
+          totalPlaced: 0,
+          unplacedCount: Infinity,
+          avgUtilization: 0,
+          feasible: false,
+          error: err.message
+        });
+      }
+    }
+    // 排序：未装件数 → 箱数 → 利用率
+    results.sort((a, b) => {
+      if (a.unplacedCount !== b.unplacedCount) return a.unplacedCount - b.unplacedCount;
+      if (a.containerCount !== b.containerCount) return a.containerCount - b.containerCount;
+      return b.avgUtilization - a.avgUtilization;
+    });
+    return results;
+  }
+
   // 导出
   return {
     calculate,
     packSingleContainer,
     multiContainerPack,
     mixedMultiContainerPack,
+    simulateContainerOptions,
     selfCheck,
     recalibrate,
     expandItems,

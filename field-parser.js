@@ -240,9 +240,13 @@ const FieldParser = (() => {
 
     const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
     const max = Math.max(...nums);
+    const min = Math.min(...nums);
 
     if (max > UNIT_INFERENCE.MM_MAX_THRESHOLD) return 'mm';        // 如 12000 → 明显毫米
     if (avg > UNIT_INFERENCE.MM_AVG_THRESHOLD) return 'mm';
+    // 增强：全部维度都 ≥100 且最大值 ≥1000 → 工业装箱单典型毫米（如 2500X2750X2800）。
+    // 厘米下 1000+ 意味着 10m+ 的货物，在装箱场景极不合理；毫米下 100 是 10cm 小件。
+    if (min >= 100 && max >= 1000) return 'mm';
     if (avg < UNIT_INFERENCE.M_AVG_THRESHOLD && max < UNIT_INFERENCE.M_MAX_THRESHOLD) return 'm'; // 如 1.2, 5.8 → 米级别
     return 'cm';                         // 30~2000 → 厘米
   }
@@ -454,7 +458,19 @@ const FieldParser = (() => {
         case 'width': if (widthCol < 0) widthCol = i; break;
         case 'height': if (heightCol < 0) heightCol = i; break;
         case 'quantity': if (qtyCol < 0) qtyCol = i; break;
-        case 'grossWeight': if (weightCol < 0) weightCol = i; break;
+        case 'grossWeight':
+          // 空表头列可能被误判为 grossWeight（confidence low）。
+          // 优先"表头非空 + 数据列有值"的重量列，避免空列抢占（如 G 列真重量被跳过的 bug）。
+          if (weightCol < 0) weightCol = i;
+          else {
+            const curHeader = String(headerRow[weightCol] || '').trim();
+            const newHeader = String(headerRow[i] || '').trim();
+            const curHasData = dataRows.some(r => r[weightCol] != null && String(r[weightCol]).trim() !== '');
+            const newHasData = dataRows.some(r => r[i] != null && String(r[i]).trim() !== '');
+            // 当前列是空表头/无数据，新列是真实重量列 → 替换
+            if ((!curHeader || !curHasData) && (newHeader || newHasData)) weightCol = i;
+          }
+          break;
         case 'netWeight': if (netWeightCol < 0) netWeightCol = i; break;
         case 'stackable': if (stackableCol < 0) stackableCol = i; break;
         case 'combinedDimension': if (lengthCol < 0) lengthCol = i; break;
@@ -514,8 +530,19 @@ const FieldParser = (() => {
           dataRows.forEach(r => {
             const v = r[idx];
             if (v != null && v !== '') {
-              const n = parseFloat(v);
-              if (!isNaN(n)) allValues.push(n);
+              const rawStr = String(v).trim();
+              // 组合列（"2500X2750X2800"）拆分出所有维度参与单位推断，
+              // 避免 parseFloat 只取第一个数字导致范围失真（如 2500 vs 2500/2750/2800）。
+              if (/[×xX*]/.test(rawStr)) {
+                const parts = rawStr.split(/[×xX*]/);
+                for (const part of parts) {
+                  const n = parseFloat(part);
+                  if (!isNaN(n) && n > 0) allValues.push(n);
+                }
+              } else {
+                const n = parseFloat(v);
+                if (!isNaN(n)) allValues.push(n);
+              }
             }
           });
         }
