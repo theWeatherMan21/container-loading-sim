@@ -86,7 +86,7 @@ FR 箱型的 EMS 空间高度使用 `effDims.maxH = container.H + FR_REALITY_LIM
 1. 对 40FR，所有 6 个朝向中，`h` 最大的那个会获得最高 fitZ → 被选中
 2. fix 后，平放（h 最小）应优先于竖放
 
-- [ ] **Step 1: 在 `findBestPlacement()` 中添加 FR 稳定性惩罚**
+- [x] **Step 1: 在 `findBestPlacement()` 中添加 FR 稳定性惩罚**
 
 在 `packing-engine.js` 的 `findBestPlacement` 函数中，在当前 `totalScore` 计算之后添加 FR 稳定性惩罚：
 
@@ -113,7 +113,7 @@ FR 箱型的 EMS 空间高度使用 `effDims.maxH = container.H + FR_REALITY_LIM
 - 竖放 2.5m / 2.28m = 1.096 → 惩罚 54.8 分 → score + 26 - 54.8 = 负数，被淘汰
 - 平放 0.3m / 2.28m = 0.132 → 不触发惩罚（0.3 < 2.28）→ 正常评分
 
-- [ ] **Step 2: 验证修复逻辑**
+- [x] **Step 2: 验证修复逻辑**
 
 手动测试：对 40FR 装入 2.5×1.5×0.3m 货物，验证 3D 视图中货物为平放而非竖放。
 
@@ -123,7 +123,7 @@ FR 箱型的 EMS 空间高度使用 `effDims.maxH = container.H + FR_REALITY_LIM
 # 不应出现 l=1.5, w=0.3, h=2.5 的朝向
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add packing-engine.js
@@ -140,7 +140,7 @@ git commit -m "fix: FR flat-rack stability penalty prevents forced vertical orie
 
 **目标**：在 Step 4 结果卡片中显示"X / Y 件已装"而非仅"Y 件已装"，让用户清楚看到闭环。
 
-- [ ] **Step 1: 在 `multiContainerPack` 中回传 `totalItems`**
+- [x] **Step 1: 在 `multiContainerPack` 中回传 `totalItems`**
 
 在 `packing-engine.js` 的 `multiContainerPack` 函数返回值中添加 `totalItems` 字段：
 
@@ -162,11 +162,11 @@ git commit -m "fix: FR flat-rack stability penalty prevents forced vertical orie
     };
 ```
 
-- [ ] **Step 2: 在 `mixedMultiContainerPack` 中同样回传 `totalItems`**
+- [x] **Step 2: 在 `mixedMultiContainerPack` 中同样回传 `totalItems`**
 
 找到 `mixedMultiContainerPack` 的返回语句（约第 827 行），添加 `totalItems: totalPlaced + remaining.length`。
 
-- [ ] **Step 3: 更新 `renderResultSummary` 中的 "已装件数" 卡片**
+- [x] **Step 3: 更新 `renderResultSummary` 中的 "已装件数" 卡片**
 
 在 `app.js` 的 `renderResultSummary` 中：
 
@@ -180,11 +180,11 @@ git commit -m "fix: FR flat-rack stability penalty prevents forced vertical orie
         hint: result.unplacedCount > 0 ? `${result.unplacedCount} 件未能装入` : '全部装入 ✓' }
 ```
 
-- [ ] **Step 4: 同样更新混合箱型返回**
+- [x] **Step 4: 同样更新混合箱型返回**
 
 在 `mixedMultiContainerPack` 的 return 末尾添加 `totalItems` 字段。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packing-engine.js app.js
@@ -200,7 +200,7 @@ git commit -m "feat: add totalItems field & placed/total ratio in result summary
 
 **目标**：当 placedItems > 500 时，显示性能提示，并提供"简化渲染"选项。
 
-- [ ] **Step 1: 添加大数据量检测 + 用户提示**
+- [x] **Step 1: 添加大数据量检测 + 用户提示**
 
 在 `buildVisualization()` 的构建开始处，`const parent` 之后添加：
 
@@ -220,7 +220,7 @@ git commit -m "feat: add totalItems field & placed/total ratio in result summary
   }
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add three-viewer.js

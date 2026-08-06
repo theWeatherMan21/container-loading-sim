@@ -4,8 +4,13 @@
  */
 
 const PackingEngine = (() => {
+  // D-18 防护：ContainerDB 为核心依赖，未加载时给出明确错误而非裸 TypeError
+  // （与 calculate() 内 window.Planner 的检查风格一致）
   const CDB = window.ContainerDB;
-  const { CONTAINER_DB, getEffectiveMaxDims, checkDoorConstraint, getOrientations, isStackable, hasValidOrientationForContainer } = CDB;
+  if (!CDB || typeof CDB.getEffectiveMaxDims !== 'function') {
+    throw new Error('ContainerDB 未加载：请确认 container-db.js 已先于 packing-engine.js 加载');
+  }
+  const { CONTAINER_DB, getEffectiveMaxDims, checkDoorConstraint, getOrientations, hasValidOrientationForContainer } = CDB;
 
   // ═══════════════════════════════════════════
   // 常量定义
@@ -20,7 +25,6 @@ const PackingEngine = (() => {
     DBL_Y_WEIGHT: 10,       // DBL评分Y轴权重（最左最优先）
     FIT_WEIGHT: 100,        // 贴合度评分权重
     LAYER_PACK_THRESHOLD: 10, // 层铺触发阈值（同型号≥10件启用）
-    VOLUME_WASTE_FACTOR: 1.3, // 体积浪费估算系数
     MAX_CONTAINERS: 100,    // 多箱分配上限（防无限循环）
     SPATIAL_HASH_THRESHOLD: 200, // 启用空间哈希的货物数量阈值
     SPATIAL_HASH_CELL_SIZE: 2.0, // 空间哈希网格单元大小（米）
@@ -204,23 +208,65 @@ const PackingEngine = (() => {
   /**
    * 剔除与已放置货物重叠的 EMS 空间
    * 解决 cutSpace 产生的重叠空间导致的货物碰撞问题
+   *
+   * 修复 C-NEW-1：不再"整块删除"重叠空间，而是按货物 AABB 对被重叠空间做
+   * 六面切割，保留不与任何货物重叠的有效部分。原实现整删会导致
+   * "merge 后部分重叠的兄弟空间"中不与货物重叠的大片有效区域永久丢失
+   * （实测 15.8 m³），把本可装下的货物推成未装。
    */
   function purgeOverlapSpaces(spaces, placedItems) {
-    return spaces.filter(space => {
+    const result = [];
+    for (const space of spaces) {
+      let current = [space];
       for (const placed of placedItems) {
-        const ox = Math.max(space.x, placed.x);
-        const oy = Math.max(space.y, placed.y);
-        const oz = Math.max(space.z, placed.z);
-        const ox2 = Math.min(space.x + space.L, placed.x + placed.l);
-        const oy2 = Math.min(space.y + space.W, placed.y + placed.w);
-        const oz2 = Math.min(space.z + space.H, placed.z + placed.h);
-        // 有正体积重叠 → 剔除
-        if (ox < ox2 - CONSTANTS.EPS && oy < oy2 - CONSTANTS.EPS && oz < oz2 - CONSTANTS.EPS) {
-          return false;
+        const next = [];
+        for (const s of current) {
+          // 计算 s 与 placed 的 AABB 重叠范围
+          const ox = Math.max(s.x, placed.x);
+          const oy = Math.max(s.y, placed.y);
+          const oz = Math.max(s.z, placed.z);
+          const ox2 = Math.min(s.x + s.L, placed.x + placed.l);
+          const oy2 = Math.min(s.y + s.W, placed.y + placed.w);
+          const oz2 = Math.min(s.z + s.H, placed.z + placed.h);
+
+          // 无正体积重叠 → 原样保留
+          if (ox >= ox2 - CONSTANTS.EPS || oy >= oy2 - CONSTANTS.EPS || oz >= oz2 - CONSTANTS.EPS) {
+            next.push(s);
+            continue;
+          }
+
+          // 六面切割：围绕重叠盒子 (ox,oy,oz)-(ox2,oy2,oz2) 保留非重叠部分
+          // 左片：x∈[s.x, ox]
+          if (ox - s.x > CONSTANTS.PRUNE_THRESHOLD) {
+            next.push({ ...s, L: ox - s.x });
+          }
+          // 右片：x∈[ox2, s.x+s.L]
+          if (s.x + s.L - ox2 > CONSTANTS.PRUNE_THRESHOLD) {
+            next.push({ ...s, x: ox2, L: s.x + s.L - ox2 });
+          }
+          // 前片：y∈[s.y, oy]，x 限制在重叠范围 [ox, ox2]
+          if (oy - s.y > CONSTANTS.PRUNE_THRESHOLD && ox2 - ox > CONSTANTS.PRUNE_THRESHOLD) {
+            next.push({ ...s, x: ox, L: ox2 - ox, W: oy - s.y });
+          }
+          // 后片：y∈[oy2, s.y+s.W]
+          if (s.y + s.W - oy2 > CONSTANTS.PRUNE_THRESHOLD && ox2 - ox > CONSTANTS.PRUNE_THRESHOLD) {
+            next.push({ ...s, x: ox, L: ox2 - ox, y: oy2, W: s.y + s.W - oy2 });
+          }
+          // 下片：z∈[s.z, oz]
+          if (oz - s.z > CONSTANTS.PRUNE_THRESHOLD && ox2 - ox > CONSTANTS.PRUNE_THRESHOLD && oy2 - oy > CONSTANTS.PRUNE_THRESHOLD) {
+            next.push({ ...s, x: ox, L: ox2 - ox, y: oy, W: oy2 - oy, H: oz - s.z });
+          }
+          // 上片：z∈[oz2, s.z+s.H]
+          if (s.z + s.H - oz2 > CONSTANTS.PRUNE_THRESHOLD && ox2 - ox > CONSTANTS.PRUNE_THRESHOLD && oy2 - oy > CONSTANTS.PRUNE_THRESHOLD) {
+            next.push({ ...s, x: ox, L: ox2 - ox, y: oy, W: oy2 - oy, z: oz2, H: s.z + s.H - oz2 });
+          }
         }
+        current = next;
+        if (current.length === 0) break; // 空间被完全覆盖，无剩余部分
       }
-      return true;
-    });
+      result.push(...current);
+    }
+    return result;
   }
 
   // ═══════════════════════════════════════════
@@ -230,7 +276,8 @@ const PackingEngine = (() => {
   /**
    * Deepest-Bottom-Left 评分
    * 优先选择最靠近里端（深处）、最低、最左的位置
-   * z优先级最高（越低越好），y次之，x再次
+   * z 优先级最高（越低越好）；x/y 同权重（各 DBL_X_WEIGHT=DBL_Y_WEIGHT=10），
+   * 由归一化数值自然排序（x 越靠里端、y 越靠左，归一化分越高）
    */
   function dblScore(spaceX, spaceY, spaceZ, container, effDims) {
     // 归一化到 [0,1]，使用有效尺寸避免 FR 超限空间产生负分
@@ -244,13 +291,32 @@ const PackingEngine = (() => {
     // zScore: 越靠近底部（z=0），分数越高
     const zScore = 1 - (spaceZ / maxH);
 
-    // DBL 优先：z 最低 > x 最里 > y 最左
+    // DBL 优先：z 最低 > x/y 同级（DBL_X_WEIGHT === DBL_Y_WEIGHT，由归一化数值自然排序）
     return zScore * CONSTANTS.DBL_Z_WEIGHT + xScore * CONSTANTS.DBL_X_WEIGHT + yScore * CONSTANTS.DBL_Y_WEIGHT;
   }
 
   // ═══════════════════════════════════════════
   // 单件 EMS 放置
   // ═══════════════════════════════════════════
+
+  /**
+   * 检查某已放置物品自身是否有支撑（z=0 视为地板支撑；否则其正下方须存在
+   * 顶面高度匹配且投影相交的物品）。用于支撑传递性验证：自身悬空的物品
+   * 不得作为上层货物的有效支撑物。
+   */
+  function hasUnderlyingSupport(p, placedItems) {
+    if (p.z <= CONSTANTS.EPS) return true;
+    for (const q of placedItems) {
+      if (q === p) continue;
+      if (Math.abs(q.z + q.h - p.z) > CONSTANTS.EPS) continue;
+      const ox = Math.max(p.x, q.x);
+      const oy = Math.max(p.y, q.y);
+      const ox2 = Math.min(p.x + p.l, q.x + q.l);
+      const oy2 = Math.min(p.y + p.w, q.y + q.w);
+      if (ox < ox2 - CONSTANTS.EPS && oy < oy2 - CONSTANTS.EPS) return true;
+    }
+    return false;
+  }
 
   /**
    * 计算货物底面在 (x,y,z) 处的支撑覆盖率
@@ -264,6 +330,8 @@ const PackingEngine = (() => {
     let supported = 0;
     for (const p of placedItems) {
       if (Math.abs(p.z + p.h - z) > CONSTANTS.EPS) continue;
+      // 支撑传递性：支撑物自身必须被支撑（悬空物品不计入支撑面积）
+      if (!hasUnderlyingSupport(p, placedItems)) continue;
       const ox = Math.max(x, p.x);
       const oy = Math.max(y, p.y);
       const ox2 = Math.min(x + l, p.x + p.l);
@@ -283,6 +351,11 @@ const PackingEngine = (() => {
    * 超出地板的程度由 getEffectiveMaxDims 的 FR_REALITY_LIMITS 控制。
    *
    * @returns {boolean} 投影与地板有交集则通过
+   */
+  /**
+   * 检查货物底面投影是否与集装箱地板存在交集（FR 框架柜专用判据）。
+   * 注意：该函数仅通过 _internal 导出供测试引用，主流程未直接调用——
+   * 实际装箱路径使用 getEffectiveMaxDims 的有效尺寸 + checkDoorConstraint 完成同语义约束。
    */
   function baseOverlapsContainerFloor(x, y, l, w, container) {
     const fx = 0, fy = 0;
@@ -341,11 +414,18 @@ const PackingEngine = (() => {
   /**
    * 承重感知支撑检查：z>0 时，校验下方物品是否能承受上方货物的重量。
    *
-   * 逻辑：找出所有位于候选位置正下方、顶面正好在 space.z 高度的已放置物品，
-   * 累加其重量。下方总重量必须 ≥ 上方物品重量 × SUPPORT_WEIGHT_RATIO（默认0.5）。
+   * 判据（v2，修复 D-01）：
+   * 1. 若下方存在声明了 maxStackWeight（单件可承受的堆叠重量 kg）的物品，
+   *    以真实承重判据判定：Σ(maxStackWeight × 接触面积占比) ≥ 上方总重；
+   * 2. 否则保留 SUPPORT_WEIGHT_RATIO（0.5）保守兜底（原判据）：
+   *    Σ(下方自重 × 接触面积占比) ≥ 上方总重 × 0.5；
+   * 3. 支撑面积下限：总接触面积必须 ≥ 上方底面积 × SUPPORT_MIN_RATIO，
+   *    否则直接判失败——杜绝"200kg 泡沫承 300kg"这类支撑面积不足的荒谬组合；
+   * 4. 支撑传递性：自身悬空（无底层支撑）的物品不参与承重（hasUnderlyingSupport）。
    *
-   * 防止场景：6200kg 发电机 → 12kg 纸箱（物理荒谬）
-   * 允许场景：850kg HVAC → 2800kg Steel-Plate（钢板在下承重足够）
+   * 允许场景：600kg 钢箱（maxStackWeight=10000）→ 1500kg 设备
+   * 拒绝场景：600kg 钢箱（无字段）→ 1500kg（600 < 1500×0.5）
+   *           200kg 泡沫仅覆盖 50% 底面 → 任意上方货物
    *
    * @param {number} x, y, z - 候选位置（z = 下方物品顶面高度）
    * @param {number} l, w - 候选货物的朝向尺寸
@@ -356,21 +436,42 @@ const PackingEngine = (() => {
   function checkWeightBearing(x, y, z, l, w, aboveWeight, placedItems) {
     if (z <= CONSTANTS.EPS) return true; // 地板支撑，通过
 
-    // 找直接下方物品（顶面正好在候选 z 高度，且 XY 投影有交集）
-    let belowTotalWeight = 0;
+    const aboveArea = l * w;
+    if (aboveArea <= CONSTANTS.EPS) return false;
+
+    let realCapacity = 0;  // 声明 maxStackWeight 物品的承重能力（面积折算）
+    let belowWeight = 0;   // 未声明物品的自重（面积折算）
+    let supportedArea = 0; // 与上方底面的总接触面积
+    let hasRealCapacity = false;
+
     for (const p of placedItems) {
       if (Math.abs(p.z + p.h - z) > CONSTANTS.EPS) continue;
+      // 支撑传递性：自身悬空的物品不得作为承重支撑
+      if (!hasUnderlyingSupport(p, placedItems)) continue;
       const ox = Math.max(x, p.x);
       const oy = Math.max(y, p.y);
       const ox2 = Math.min(x + l, p.x + p.l);
       const oy2 = Math.min(y + w, p.y + p.w);
       if (ox < ox2 - CONSTANTS.EPS && oy < oy2 - CONSTANTS.EPS) {
-        // 有交集的下方物品，累加其重量
-        belowTotalWeight += p.weight;
+        const contactArea = (ox2 - ox) * (oy2 - oy);
+        const ratio = contactArea / aboveArea;
+        supportedArea += contactArea;
+        if (p.maxStackWeight != null && p.maxStackWeight >= 0) {
+          realCapacity += p.maxStackWeight * ratio;
+          hasRealCapacity = true;
+        } else {
+          belowWeight += p.weight * ratio;
+        }
       }
     }
 
-    return belowTotalWeight >= aboveWeight * CONSTANTS.SUPPORT_WEIGHT_RATIO;
+    // 支撑面积下限：总接触面积必须达到上方底面积的 SUPPORT_MIN_RATIO
+    if (supportedArea < aboveArea * SUPPORT_MIN_RATIO) return false;
+
+    // 真实承重判据优先：一旦下方有声明 maxStackWeight 的物品，以真实能力为准
+    if (hasRealCapacity) return realCapacity >= aboveWeight;
+    // 保守兜底（原判据）：下方总重 ≥ 上方总重 × 0.5
+    return belowWeight >= aboveWeight * CONSTANTS.SUPPORT_WEIGHT_RATIO;
   }
 
   /**
@@ -380,6 +481,8 @@ const PackingEngine = (() => {
   function findBestPlacement(item, emsSpaces, container, currentWeight, tolerance, placedItems = []) {
     let best = null;
     let bestScore = -Infinity;
+    // 入口一次性检查：hasValidOrientationForContainer 为纯函数，item/container/tolerance
+    // 在本函数内不变，循环内无需重复检查（原循环内同条件检查为死代码，已删除）。
     if (container && !hasValidOrientationForContainer(item, container, tolerance)) {
       return null;
     }
@@ -402,15 +505,17 @@ const PackingEngine = (() => {
         if (o.l > effDims.maxL || o.w > effDims.maxW || o.h > effDims.maxH) continue;
 
         // 检查门约束（FR 箱型无门约束）
+        // 注意：传入 orientationFixed，保证固定朝向货物只用其两个水平朝向过门检查，
+        // 与 CDB.checkDoorConstraint 内部口径一致（否则朝向对象缺字段会退化为 6 方向
+        // 检查，含倒置朝向，可能放行物理上无法进门的水平朝向）。
         if (container.type !== 'flatRack') {
-          const doorCheck = checkDoorConstraint({ l: o.l, w: o.w, h: o.h }, container, tolerance);
+          const doorCheck = checkDoorConstraint({ l: o.l, w: o.w, h: o.h, orientationFixed: item.orientationFixed === true }, container, tolerance);
           if (!doorCheck.pass) continue;
         }
 
         // 计算失败必须保留未装货物，调用方据此决定换箱/重算。
-        if (!hasValidOrientationForContainer(item, container, tolerance)) {
-          return null;
-        }
+        // （原此处重复调用 hasValidOrientationForContainer 与入口检查恒同，已删除；
+        //   容器尺寸适配由上方 effDims 边界检查 + 门约束检查共同兜底。）
 
         // 重量检查
         if (currentWeight + item.weight > container.payload) continue;
@@ -527,6 +632,9 @@ const PackingEngine = (() => {
       stackable: item.stackable !== false,
       colorIndex: item.colorIndex || 0,
       origL: item.l, origW: item.w, origH: item.h,
+      // 约束透传：供 selfCheck 以与放置路径一致的口径复查
+      orientationFixed: item.orientationFixed === true,
+      maxStackWeight: item.maxStackWeight,
       overLength: best.overLength || false   // FR 超长货（伸出端壁，需标记）
     };
   }
@@ -588,12 +696,16 @@ const PackingEngine = (() => {
 
     let remaining = quantity;
     const placed = [];
+    // 层铺门过滤必须与逐件 EMS 路径（findBestPlacement）口径一致：
+    // 朝向对象显式携带 orientationFixed，避免 checkDoorConstraint 内部退化为
+    // 6 方向检查（含倒置），导致固定朝向货以物理无法进门的水平朝向被放行。
     const orientations = getOrientations(item).filter(o => {
       const effDims = getEffectiveMaxDims(container, tolerance);
       if (o.l > effDims.maxL + CONSTANTS.EPS ||
           o.w > effDims.maxW + CONSTANTS.EPS ||
           o.h > effDims.maxH + CONSTANTS.EPS) return false;
-      return container.type === 'flatRack' || checkDoorConstraint(o, container, tolerance).pass;
+      return container.type === 'flatRack' ||
+        checkDoorConstraint({ l: o.l, w: o.w, h: o.h, orientationFixed: item.orientationFixed === true }, container, tolerance).pass;
     });
 
     if (orientations.length === 0) return { placed, remaining };
@@ -667,7 +779,10 @@ const PackingEngine = (() => {
               weight: item.weight,
               stackable: item.stackable !== false,
               colorIndex: item.colorIndex || 0,
-              origL: item.l, origW: item.w, origH: item.h
+              origL: item.l, origW: item.w, origH: item.h,
+              // 约束透传：供 selfCheck 以与放置路径一致的口径复查
+              orientationFixed: item.orientationFixed === true,
+              maxStackWeight: item.maxStackWeight
             };
             placed.push(entry);
             placedItems.push(entry);
@@ -832,7 +947,13 @@ const PackingEngine = (() => {
     const packedVolume = packed.reduce((s, i) => s + i.l * i.w * i.h, 0);
     const packedWeight = packed.reduce((s, i) => s + i.weight, 0);
     const containerVol = container.L * container.W * container.H;
-    const utilization = containerVol > 0 ? Math.min(1, packedVolume / containerVol) : 0;
+    // 修复 D-03：utilization 不再用 Math.min(1, …) 截断。
+    // FR 超限装载（packedVolume > containerVol）保留真实比值（>1），
+    // 并附加 overVolume 标记供 UI 警示；weightedAvgUtilization 直接使用
+    // 真实箱容 containerVolume，避免截断值反推容量导致跨箱平均失真。
+    const rawUtil = containerVol > 0 ? packedVolume / containerVol : 0;
+    const utilization = rawUtil;
+    const overVolume = rawUtil > 1 + CONSTANTS.EPS;
     const effectiveVolume = effDims.maxL * effDims.maxW * effDims.maxH;
     const spaceEfficiency = effectiveVolume > 0 ? packedVolume / effectiveVolume : 0;
     const weightUtil = container.payload > 0 ? packedWeight / container.payload : 0;
@@ -845,6 +966,8 @@ const PackingEngine = (() => {
       weightUtil,
       totalWeight: packedWeight,
       totalVolume: packedVolume,
+      containerVolume: containerVol,
+      overVolume,
       containerCode: container.code || 'UNKNOWN'
     };
   }
@@ -858,7 +981,9 @@ const PackingEngine = (() => {
    *
    * 算术平均会等权对待 20GP 与 45HQ，并让尾箱（通常利用率低）系统性拉低指标；
    * 加权口径 = Σ(已装体积) / Σ(箱容)，跨箱型可比，也避免尾箱拖尾。
-   * 箱容由 totalVolume / utilization 还原，无需额外传规格。
+   * 修复 D-03：容量累加优先使用每箱携带的真实箱容 containerVolume
+   * （FR 超限装载时 utilization > 1，用 totalVolume/utilization 反推仍等于
+   * 真实箱容，但显式字段更可靠）；兼容无该字段的旧对象/mock。
    */
   function weightedAvgUtilization(containers) {
     const nonEmpty = containers.filter(c => c.placedItems.length > 0);
@@ -867,7 +992,11 @@ const PackingEngine = (() => {
     let capacity = 0;
     for (const c of nonEmpty) {
       packed += c.totalVolume;
-      if (c.utilization > CONSTANTS.EPS) capacity += c.totalVolume / c.utilization;
+      if (c.containerVolume != null && Number.isFinite(c.containerVolume) && c.containerVolume > 0) {
+        capacity += c.containerVolume;
+      } else if (c.utilization > CONSTANTS.EPS) {
+        capacity += c.totalVolume / c.utilization;
+      }
     }
     return capacity > CONSTANTS.EPS ? packed / capacity : 0;
   }
@@ -1035,7 +1164,8 @@ const PackingEngine = (() => {
     let best = null;
     let evaluated = 0;
     for (const candidate of candidates) {
-      // 至少评估一个候选；预算耗尽后停止后续候选。
+      // 时间预算为软限制：检查仅在候选之间进行，当前候选一旦开始会完整跑完；
+      // evaluated > 0 保证至少评估一个候选；预算耗尽后停止后续候选。
       if (evaluated > 0 && Date.now() - startedAt >= maxTimeMs) break;
       const result = multiContainerPackOnce(candidate.items, containerSpec, candidate.options);
       evaluated++;
@@ -1391,9 +1521,11 @@ const PackingEngine = (() => {
     }
 
     // 5. 门约束（逐件检查已放置货物）
+    // 放置记录已透传 orientationFixed，复查口径与放置路径一致（修复 H1）：
+    // 固定朝向货只用两个水平朝向过门检查，不因"倒置可过门"而放行。
     const doorViolations = [];
     for (const item of placedItems) {
-      const dc = checkDoorConstraint({ l: item.l, w: item.w, h: item.h }, container, tolerance);
+      const dc = checkDoorConstraint({ l: item.l, w: item.w, h: item.h, orientationFixed: item.orientationFixed === true }, container, tolerance);
       if (!dc.pass) {
         doorViolations.push(item.model);
       }
@@ -1613,10 +1745,24 @@ const PackingEngine = (() => {
     });
 
     if (!hasCriticalWarnings && originalResult.avgUtilization >= 0.5) {
-      return { ...originalResult, recalculated: false };
+      return { ...originalResult, recalculated: false, recalcSkipped: false };
     }
 
-    return { ...newResult, recalculated: true };
+    // 修复 D-02：重算结果不再无条件替换。
+    // 比较新旧结果——利用率为首要指标，其次已装件数；
+    // 仅当新结果不劣于旧结果时才替换，更差时保留原结果并标注 recalcSkipped。
+    const EPS = CONSTANTS.EPS;
+    const newUtil = Number.isFinite(newResult.avgUtilization) ? newResult.avgUtilization : 0;
+    const oldUtil = Number.isFinite(originalResult.avgUtilization) ? originalResult.avgUtilization : 0;
+    const newPlaced = Number.isFinite(newResult.totalPlaced) ? newResult.totalPlaced : 0;
+    const oldPlaced = Number.isFinite(originalResult.totalPlaced) ? originalResult.totalPlaced : 0;
+    const utilBetter = newUtil > oldUtil + EPS;
+    const utilTie = Math.abs(newUtil - oldUtil) <= EPS;
+
+    if (utilBetter || (utilTie && newPlaced >= oldPlaced)) {
+      return { ...newResult, recalculated: true, recalcSkipped: false };
+    }
+    return { ...originalResult, recalculated: false, recalcSkipped: true };
   }
 
   // ═══════════════════════════════════════════
@@ -1629,7 +1775,7 @@ const PackingEngine = (() => {
     }
 
     // structured-fr：FR 悬出场景的显式结构化顺序（直接返回排序结果，不走 comparator）。
-    // 经验证可装 40FR 一箱 12 件的排列：前段窄矮件（宽≤1.6 且 高≤1.2，铺满 y 悬出区）
+    // 经验证可装 40FR 一箱 12 件的排列：前段窄矮件（宽≤1.6 且 高≤2.0，铺满 y 悬出区）
     // → 两个最大不可叠件（体积降序，占中段）→ 剩余件（宽度降序收尾）。
     // 这是对"大件 + 超宽悬出"场景的定向启发，无法被通用排序规则复现。
     if (strategy === 'structured-fr') {
@@ -1638,7 +1784,7 @@ const PackingEngine = (() => {
       const list = [...items];
       list.sort((a, b) => volume(b) - volume(a));
       const middle = list.filter(it => it.stackable === false && maxDim(it) > 2.5).slice(0, 2);
-      // front：可叠小件（≤1.2）+ 不可叠窄矮件（宽≤1.6 且 高≤1.2，如 KT-800）——先铺前段
+      // front：可叠小件（≤1.2）+ 不可叠窄矮件（宽≤1.6 且 高≤2.0，如 KT-800）——先铺前段
       const front = list.filter(it =>
         (it.stackable !== false && maxDim(it) <= 1.2) ||
         (it.stackable === false && it.w <= 1.6 && it.h <= 2.0 && !middle.includes(it))
@@ -1803,6 +1949,10 @@ const PackingEngine = (() => {
       if (!Number.isInteger(qty) || qty <= 0) {
         throw new Error(`${item.model || '未知货物'} 的数量必须为正整数`);
       }
+      // X-02 防护：超大数量会撑爆展开件数（内存/耗时失控），超过单订单上限直接报错
+      if (qty > 1000000) {
+        throw new Error(`${item.model || '未知货物'} 的数量超过单订单上限（1000000）`);
+      }
     }
   }
 
@@ -1889,24 +2039,36 @@ const PackingEngine = (() => {
           // 按"输入件数 - 已装件数"差量找回未装件。
           // 不能用 unplacedItems（model 名去重列表）计数——它会丢失数量，
           // 例如 300 件 Carton 装 280 件时只剩 ['Carton']，导致 19 件静默消失。
-          const placedByModel = new Map();
+          // 修复 X-01：计数键为 (model + 尺寸签名)，同型号多尺寸时找回规格
+          // 与实际未装件一致，杜绝"已装大件混入找回清单"的幽灵件。
+          const sizeKeyOf = (it) => {
+            const l = (it.origL != null ? it.origL : it.l).toFixed(4);
+            const w = (it.origW != null ? it.origW : it.w).toFixed(4);
+            const h = (it.origH != null ? it.origH : it.h).toFixed(4);
+            return `${l}x${w}x${h}`;
+          };
+          const itemKeyOf = (it) => `${it.model}|${sizeKeyOf(it)}`;
+          const placedByKey = new Map();
           for (const packed of assignmentResult.containers) {
             for (const item of packed.placedItems) {
-              placedByModel.set(item.model, (placedByModel.get(item.model) || 0) + 1);
+              const key = itemKeyOf(item);
+              placedByKey.set(key, (placedByKey.get(key) || 0) + 1);
             }
           }
-          const missingByModel = new Map();
+          const missingByKey = new Map();
           for (const item of assignment.items) {
-            missingByModel.set(item.model, (missingByModel.get(item.model) || 0) + 1);
+            const key = itemKeyOf(item);
+            missingByKey.set(key, (missingByKey.get(key) || 0) + 1);
           }
-          for (const [model, count] of missingByModel) {
-            missingByModel.set(model, count - (placedByModel.get(model) || 0));
+          for (const [key, count] of missingByKey) {
+            missingByKey.set(key, count - (placedByKey.get(key) || 0));
           }
           for (const item of assignment.items) {
-            const missing = missingByModel.get(item.model) || 0;
+            const key = itemKeyOf(item);
+            const missing = missingByKey.get(key) || 0;
             if (missing > 0) {
               allUnplaced.push(item);
-              missingByModel.set(item.model, missing - 1);
+              missingByKey.set(key, missing - 1);
             }
           }
         }
@@ -2007,6 +2169,26 @@ const PackingEngine = (() => {
       if (!containerSpec) throw new Error(`未知箱型: ${containerCodeOrSpec}`);
     } else if (containerCodeOrSpec && typeof containerCodeOrSpec === 'object') {
       containerSpec = containerCodeOrSpec;
+      // 修复 C-NEW-3：容器规格对象入口校验。
+      // L/W/H/payload 任一为 NaN/≤0/非有限数时，重量/体积约束会静默失效
+      // （如 payload:NaN 使重量比较恒为 false，超重货全装且 hasErrors=false）。
+      // 校验失败时：若对象带可解析 code 则回退 CONTAINER_DB；否则抛明确错误，
+      // 禁止静默放行。containerCode 字符串路径不受影响。
+      const specChecks = [
+        { field: 'L', value: Number(containerSpec.L) },
+        { field: 'W', value: Number(containerSpec.W) },
+        { field: 'H', value: Number(containerSpec.H) },
+        { field: 'payload', value: Number(containerSpec.payload) }
+      ];
+      const invalidFields = specChecks.filter(s => !Number.isFinite(s.value) || s.value <= 0);
+      if (invalidFields.length > 0) {
+        const code = containerSpec.code;
+        if (typeof code === 'string' && CONTAINER_DB[code]) {
+          containerSpec = CONTAINER_DB[code];
+        } else {
+          throw new Error(`箱型规格无效：${invalidFields.map(s => `${s.field}=${containerSpec[s.field]}`).join(', ')} 必须为正数`);
+        }
+      }
     } else {
       throw new Error('无效的箱型规格：未选择或数据损坏，请返回上一步重新确认');
     }

@@ -60,7 +60,7 @@
     stackable: '可叠放',
     possibleWeight: '忽略',
     combinedDimension: '组合尺寸',
-    possibleDimension: '长',
+    possibleDimension: '可能尺寸',
     unknown: '忽略'
   };
 
@@ -71,13 +71,16 @@
     '高': 'height',
     '数量': 'quantity',
     '毛重': 'grossWeight',
+    '净重': 'netWeight',
     '体积': 'volume',
+    '描述': 'description',
     '可叠放': 'stackable',
     '组合尺寸': 'combinedDimension',
+    '可能尺寸': 'possibleDimension',
     '忽略': 'ignore'
   };
 
-  const DROPDOWN_OPTIONS = ['型号', '长', '宽', '高', '组合尺寸', '数量', '毛重', '体积', '可叠放', '忽略'];
+  const DROPDOWN_OPTIONS = ['型号', '长', '宽', '高', '组合尺寸', '可能尺寸', '数量', '毛重', '净重', '体积', '描述', '可叠放', '忽略'];
 
   // ═══════════════════════════════════════════
   // DOM references (lazy — grabbed on init)
@@ -89,6 +92,14 @@
   // ═══════════════════════════════════════════
   function showStep(step) {
     state.currentStep = step;
+    // app#6 竞态防护：离开计算流程（目标非 Step4）且计算仍在途时作废之——
+    // 递增 generation + 取消 setTimeout，防止旧计算完成后 renderStep4/showStep(4) 强拉用户。
+    // Step4 是计算完成的目标步，不在此列；正常完成路径不受影响。
+    if (step !== 4 && state._calculating) {
+      calcGeneration++;
+      if (activeCalcHandle) { activeCalcHandle.cancel(); activeCalcHandle = null; }
+      state._calculating = false;
+    }
     for (let i = 1; i <= 4; i++) {
       const el = $(`step-${i}`);
       if (el) {
@@ -195,24 +206,7 @@
   // ═══════════════════════════════════════════
   // Progress bar
   // ═══════════════════════════════════════════
-  function showProgress(text) {
-    const bar = $('progress-bar');
-    const txt = $('progress-text');
-    const status = $('calculation-status');
-    if (bar) { bar.style.display = 'block'; bar.value = 0; }
-    if (txt) { txt.style.display = 'block'; txt.textContent = '0%'; }
-    if (status) { status.style.display = 'block'; status.textContent = text || '计算中…'; }
-  }
-
-  function updateProgress(percent, text) {
-    const bar = $('progress-bar');
-    const txt = $('progress-text');
-    const status = $('calculation-status');
-    if (bar) bar.value = percent;
-    if (txt) txt.textContent = Math.round(percent) + '%';
-    if (status && text) status.textContent = text;
-  }
-
+  // 注：showProgress/updateProgress 已删除（无调用点，死代码）；hideProgress 仍有调用点，保留。
   function hideProgress() {
     const bar = $('progress-bar');
     const txt = $('progress-text');
@@ -222,9 +216,16 @@
     if (status) status.style.display = 'none';
   }
 
+  // 在途计算控制（app#6 竞态防护）：
+  // calcGeneration 每次作废（resetState / 离开计算流程）递增，旧回调校验失败即放弃执行；
+  // activeCalcHandle 持有 simulateProgress 的取消句柄，可提前清除未触发的 setTimeout。
+  let calcGeneration = 0;
+  let activeCalcHandle = null;
+
   /**
    * Simulate progress while synchronous calculation runs.
    * Uses setTimeout chains to yield to the browser between ticks.
+   * Returns a cancel handle so callers can void the pending callback.
    */
   function simulateProgress(_durationMs, onDone) {
     // Indeterminate 脉冲进度条，不显示虚假百分比
@@ -239,10 +240,16 @@
       status.textContent = '算法计算中，大货量可能需较长时间…';
     }
 
-    // 延迟启动真实计算，确保 UI 渲染
-    setTimeout(() => {
+    // 延迟启动真实计算，确保 UI 渲染；返回可取消句柄供作废
+    const timeoutId = setTimeout(() => {
       if (onDone) onDone();
     }, 100);
+
+    return {
+      cancel() {
+        clearTimeout(timeoutId);
+      }
+    };
   }
 
   // ═══════════════════════════════════════════
@@ -463,6 +470,15 @@
     state.items = state.manualItems.map(i => ({ ...i }));
     state.selectedUnit = 'm';
 
+    // 清除可能残留的混合/推荐状态，防止手动货物被旧箱型（或旧混合方案）计算
+    state.useMixed = false;
+    state.containerSpecs = null;
+    state.containerSpec = null;
+    state.selectedContainerCode = null;
+    state.packingResult = null;
+    state.visualization = null;
+    // tolerance 保持用户设置（不重置）
+
     state.skuOverrides = {};
     for (const item of state.items) {
       state.skuOverrides[item.model] = {
@@ -612,10 +628,29 @@
     const dataRows = allRawRows.slice(headerRowIndex + 1);
 
     const dimValues = [];
+    // 与 field-parser 的 COMBINED_DIM_PATTERN 保持一致
+    const COMBINED_DIM_RE = /^([\d]+(?:\.[\d]+)?)\s*[×xX*]\s*([\d]+(?:\.[\d]+)?)\s*[×xX*]\s*([\d]+(?:\.[\d]+)?)$/;
     for (const row of dataRows) {
       for (const idx of dimIndices) {
         const v = row[idx];
         if (v != null && v !== '') {
+          const rawStr = String(v).trim();
+          // 组合尺寸列（如 "1.2X1.5X1.8"、"5.7*4.3*4.29"）：先按分隔符拆分，
+          // 各维度分别采样。直接 normalizeNumber 会得到 NaN（或假数值），
+          // 导致单位被误判为 cm，与 field-parser 拆分为 m 不一致。
+          if (/[×xX*]/.test(rawStr)) {
+            const cleaned = rawStr
+              .replace(/(\d)\s+\.\s*(\d)/g, '$1.$2')
+              .replace(/\.\s+(\d)/g, '.$1');
+            const m = cleaned.match(COMBINED_DIM_RE);
+            if (m) {
+              for (let k = 1; k <= 3; k++) {
+                const n = parseFloat(m[k]);
+                if (!isNaN(n) && n > 0) dimValues.push(n);
+              }
+              continue;
+            }
+          }
           const n = FP.normalizeNumber ? FP.normalizeNumber(v) : parseFloat(v);
           if (!isNaN(n) && n > 0) dimValues.push(n);
         }
@@ -697,7 +732,14 @@
     html += '</tr></thead><tbody>';
 
     for (const m of safeMapping) {
-      const currentLabel = FIELD_TO_LABEL[m.field] || '忽略';
+      // app#8：currentLabel 必须真实反映实际字段且一定出现在下拉选项中。
+      // 若映射表/选项表缺项（如历史上 netWeight 无 '净重' 选项），动态补充该标签，
+      // 避免无 selected 时浏览器默认显示首项"型号"造成"显示型号、实为净重"的语义漂移。
+      const fieldLabel = FIELD_TO_LABEL[m.field];
+      const mappingOptions = fieldLabel && !DROPDOWN_OPTIONS.includes(fieldLabel)
+        ? DROPDOWN_OPTIONS.concat([fieldLabel])
+        : DROPDOWN_OPTIONS;
+      const currentLabel = fieldLabel || '忽略';
       const confidenceLabel = m.confidence === 'high' ? '高 ⭐' : m.confidence === 'medium' ? '中 ◇' : '低 ○';
 
       // Build sample text from first 3 rows
@@ -716,7 +758,7 @@
           style="padding:4px 8px;border:1px solid #D4C5B9;border-radius:8px;
                  font-size:13px;background:#fff;color:#3D3535;cursor:pointer;
                  transition:border-color 0.2s ease;">
-          ${DROPDOWN_OPTIONS.map(opt => {
+          ${mappingOptions.map(opt => {
             const sel = opt === currentLabel ? ' selected' : '';
             return `<option value="${opt}"${sel}>${opt}</option>`;
           }).join('')}
@@ -913,6 +955,10 @@
           // Use selected dimensions for all items of this model
           const modelItems = result.items.filter(i => i.model === model);
           const totalQty = modelItems.reduce((s, i) => s + (i.quantity || 1), 0);
+          // app#10：同型号多尺寸组合并时，重量按数量加权平均（Σ(weight×qty)/Σqty），
+          // 无重量行按 0 参与；不再取第一行重量应用于全部数量。
+          const totalWeight = modelItems.reduce((s, i) => s + (i.weight || 0) * (i.quantity || 1), 0);
+          const mergedWeight = totalQty > 0 ? totalWeight / totalQty : 0;
 
           // Preserve stackable/orientationFixed from first item
           const firstItem = modelItems[0] || {};
@@ -922,7 +968,7 @@
             w: selectedGroup.w,
             h: selectedGroup.h,
             quantity: totalQty,
-            weight: firstItem.weight || 0,
+            weight: Math.round(mergedWeight * 1000) / 1000,
             stackable: firstItem.stackable !== false,
             orientationFixed: firstItem.orientationFixed || false,
             volume: selectedGroup.l * selectedGroup.w * selectedGroup.h
@@ -1079,6 +1125,8 @@
       btn.innerHTML = '📦 开始计算';
       btn.onclick = startCalculation;
       step3.appendChild(btn);
+      // app#19：动态创建的按钮同样绑定涟漪效果（函数声明提升，此处可安全调用）
+      applyButtonRipple(btn);
     }
     // 根据状态启用/禁用按钮
     const canCalculate = state.containerSpec || (state.useMixed && state.containerSpecs && state.containerSpecs.length > 0);
@@ -1234,6 +1282,13 @@
 
   // ── 分支 B: 推荐失败 ──
   function renderFailedRecommendation(recEl, altEl) {
+    // 推荐失败时清空旧的箱型选择，防止新货物静默沿用旧 containerSpec 计算；
+    // 调用链后方的 ensureCalculateButton() 会依据清空后的状态禁用计算按钮
+    state.containerSpec = null;
+    state.selectedContainerCode = null;
+    state.containerSpecs = null;
+    state.useMixed = false;
+
     const allContainers = CDB.CONTAINER_LIST;
     let manualHtml = '<div style="background:#FFF9E6;border:1px solid #E8D5A0;border-radius:12px;padding:16px;">';
     manualHtml += '<div style="font-weight:600;color:#8B7516;margin-bottom:8px;">⚠️ 自动推荐失败，请手动选择箱型：</div>';
@@ -1460,7 +1515,7 @@
 
     try {
       const recommendation = CDB.autoRecommend(state.items, state.tolerance);
-      console.log('[refreshContainerRecommendation] recommendation:', recommendation);
+      console.debug('[refreshContainerRecommendation] recommendation:', recommendation);
 
       // 实际装箱预演：autoRecommend 只看单件适配，不验证真实箱数。
       // 对 primary + alternatives 跑多起点装箱，若某替代箱实际箱数更少（如 20FR×3 vs 40FR×1），
@@ -1480,7 +1535,7 @@
               randomStarts: 8,
               optimizationTimeMs: 3000
             });
-            console.log('[refreshContainerRecommendation] simulation:', simulation.map(s => `${s.code}:${s.containerCount}箱`).join(', '));
+            console.debug('[refreshContainerRecommendation] simulation:', simulation.map(s => `${s.code}:${s.containerCount}箱`).join(', '));
             // 单箱容量优先：若某箱型模拟退火确认"单箱可装完全部"，直接推荐（珍珠解识别）。
             const oneBoxFit = simulation.find(s => s.feasible && s.singleBoxCapacity != null && s.singleBoxCapacity >= s.totalItems);
             if (oneBoxFit && oneBoxFit.code !== recommendation.primary.code) {
@@ -1550,7 +1605,7 @@
     // 防重复点击
     if (state._calculating) return;
     state._calculating = true;
-    console.log('[startCalculation] state:', { containerSpec: state.containerSpec?.code, useMixed: state.useMixed, containerSpecs: state.containerSpecs?.length, items: state.items.length });
+    console.debug('[startCalculation] state:', { containerSpec: state.containerSpec?.code, useMixed: state.useMixed, containerSpecs: state.containerSpecs?.length, items: state.items.length });
     try {
       if (!state.items || state.items.length === 0) {
         showError('没有货物数据，请先上传装箱单～ 🥛');
@@ -1573,7 +1628,11 @@
       });
 
       // Show indeterminate progress, then do actual calculation
-      simulateProgress(100, () => {
+      // app#6：携带 generation token；若计算期间 resetState / 离开流程，gen 失配，
+      // 回调直接放弃（不渲染、不跳转、不篡改 _calculating——由作废方负责复位）。
+      const gen = ++calcGeneration;
+      activeCalcHandle = simulateProgress(100, () => {
+        if (gen !== calcGeneration) return; // 竞态：计算已作废
         try {
           // 检测混合装箱模式
           const useMixed = state.useMixed && state.containerSpecs && state.containerSpecs.length > 0;
@@ -2057,35 +2116,9 @@
     const reuploadBtn = document.querySelector('#step-2 .btn-reupload');
     if (reuploadBtn) {
       reuploadBtn.addEventListener('click', () => {
-        // Reset state
-        state.fileData = null;
-        state.fileName = '';
-        state.parsedResult = null;
-        state.dataRows = null;
-        state.items = [];
-        state.containerSpec = null;
-        state.containerSpecs = null;
-        state.useMixed = false;
-        state.tolerance = 0.05;
-        state.selectedUnit = 'cm';
-        state.selectedContainerCode = null;
-        state.packingResult = null;
-        state.visualization = null;
-        state.columnMapping = [];
-        state.multiSizeDecisions = {};
-        state.skuOverrides = {};
-
-        // 清理 3D 视图，避免旧场景干扰新导入
-        const TV = getTV();
-        if (TV && typeof TV.disposeAll === 'function') {
-          TV.disposeAll();
-        }
-
-        // 清空结果容器
-        const resultContainer = $('resultContainer');
-        if (resultContainer) resultContainer.innerHTML = '';
-
-        showStep(1);
+        // 完整清理：复用 App.resetState()（覆盖全部 state 字段，含 manualItems，
+        // 并调用 TV.disposeAll() 释放 3D 视图、清空结果容器、showStep(1)）
+        App.resetState();
 
         // Reset file input（克隆以彻底重置，解决 WebView 中 change 事件不触发的问题）
         const fileInput = $('fileInput');
@@ -2202,6 +2235,10 @@
       state.skuOverrides = {};
       state.manualItems = [];
       state._calculating = false;
+      // app#6：作废在途计算——取消未触发的 setTimeout + 递增 generation，
+      // 旧 onDone 即使已进入队列也会因 token 失配而放弃渲染/跳转。
+      calcGeneration++;
+      if (activeCalcHandle) { activeCalcHandle.cancel(); activeCalcHandle = null; }
       // 清理 3D 视图：释放渲染器/场景/rAF，避免"重新开始"后资源泄漏
       // （此前遗漏，与 Step 2"重新上传"的清理逻辑对齐）
       const TV = getTV();
@@ -2246,27 +2283,33 @@
     themeBtns.forEach(b => b.classList.toggle('active', b.dataset.theme === saved));
   }
 
-  function initButtonRipples() {
-    document.querySelectorAll('.btn-primary, .btn-secondary, .btn-export, .btn-ghost, .theme-btn, .container-tabs__btn').forEach(btn => {
-      btn.addEventListener('mousemove', (e) => {
-        const rect = btn.getBoundingClientRect();
-        btn.style.setProperty('--mx', ((e.clientX - rect.left) / rect.width * 100) + '%');
-        btn.style.setProperty('--my', ((e.clientY - rect.top) / rect.height * 100) + '%');
-      });
-
-      btn.addEventListener('click', function (e) {
-        if (this.disabled) return;
-        const rect = this.getBoundingClientRect();
-        const ripple = document.createElement('span');
-        ripple.className = 'ripple';
-        const size = Math.max(rect.width, rect.height);
-        ripple.style.width = ripple.style.height = size + 'px';
-        ripple.style.left = (e.clientX - rect.left - size / 2) + 'px';
-        ripple.style.top = (e.clientY - rect.top - size / 2) + 'px';
-        this.appendChild(ripple);
-        setTimeout(() => ripple.remove(), 600);
-      });
+  // app#19 修复：提取 ripple 绑定逻辑为独立函数，供静态按钮（initButtonRipples）与
+  // 动态创建的按钮（ensureCalculateButton）复用；dataset 标记防止重复绑定。
+  function applyButtonRipple(btn) {
+    if (!btn || btn.dataset.rippleBound === '1') return;
+    btn.dataset.rippleBound = '1';
+    btn.addEventListener('mousemove', (e) => {
+      const rect = btn.getBoundingClientRect();
+      btn.style.setProperty('--mx', ((e.clientX - rect.left) / rect.width * 100) + '%');
+      btn.style.setProperty('--my', ((e.clientY - rect.top) / rect.height * 100) + '%');
     });
+
+    btn.addEventListener('click', function (e) {
+      if (this.disabled) return;
+      const rect = this.getBoundingClientRect();
+      const ripple = document.createElement('span');
+      ripple.className = 'ripple';
+      const size = Math.max(rect.width, rect.height);
+      ripple.style.width = ripple.style.height = size + 'px';
+      ripple.style.left = (e.clientX - rect.left - size / 2) + 'px';
+      ripple.style.top = (e.clientY - rect.top - size / 2) + 'px';
+      this.appendChild(ripple);
+      setTimeout(() => ripple.remove(), 600);
+    });
+  }
+
+  function initButtonRipples() {
+    document.querySelectorAll('.btn-primary, .btn-secondary, .btn-export, .btn-ghost, .theme-btn, .container-tabs__btn').forEach(applyButtonRipple);
   }
 
   if (document.readyState === 'loading') {

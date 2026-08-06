@@ -44,6 +44,7 @@ let scenes = {};
 let renderers = {};
 let cameras = {};
 let controls = {};
+let containerSpecs = {};   // canvasId → containerSpec（V-01 懒创建 renderer 所需）
 let activeCanvasId = null;
 let rAFId = null;
 let parentEl = null;         // 3D 容器 DOM
@@ -62,6 +63,19 @@ let labelSprites = [];       // 所有标签 Sprite（型号/旋转/超限/尺�
 // 资源清理
 // ═══════════════════════════════════════════
 
+/**
+ * V-02 修复：显式释放材质引用的贴图纹理。
+ * Material.dispose() 只释放 GPU 程序/着色器，不会释放其 map（CanvasTexture）——
+ * 尺寸标注/标签 sprite 的纹理若不显式 dispose，重复 build/dispose 循环会持续泄漏。
+ * 同一纹理被多个材质引用时仅释放一次（disposedTextures 集合去重）。
+ */
+function disposeMaterialMap(material, disposedTextures = new Set()) {
+  if (material && material.map && material.map.isTexture && !disposedTextures.has(material.map)) {
+    material.map.dispose();
+    disposedTextures.add(material.map);
+  }
+}
+
 function disposeAll() {
   disposed = true;
   if (rAFId != null) { cancelAnimationFrame(rAFId); rAFId = null; }
@@ -73,6 +87,7 @@ function disposeAll() {
     if (renderer.forceContextLoss) renderer.forceContextLoss();
   }
   renderers = {};
+  containerSpecs = {};
 
   for (const ctrl of Object.values(controls)) {
     ctrl.dispose();
@@ -91,26 +106,35 @@ function disposeAll() {
     }
   }
 
+  // V-02 修复：纹理释放集合（去重 —— 同一 CanvasTexture 可能被多个 sprite 材质引用）
+  const disposedTextures = new Set();
+
   for (const scene of Object.values(scenes)) {
     scene.traverse((obj) => {
       if (obj.geometry && !cachedGeos.has(obj.geometry)) obj.geometry.dispose();
       if (obj.material) {
         if (Array.isArray(obj.material)) {
-          obj.material.forEach(m => { if (!cachedMats.has(m)) m.dispose(); });
-        } else if (!cachedMats.has(obj.material)) {
-          obj.material.dispose();
+          obj.material.forEach(m => {
+            if (!cachedMats.has(m)) m.dispose();
+            disposeMaterialMap(m, disposedTextures);
+          });
+        } else {
+          if (!cachedMats.has(obj.material)) obj.material.dispose();
+          disposeMaterialMap(obj.material, disposedTextures);
         }
       }
     });
   }
 
-  // 最后释放缓存
+  // 最后释放缓存（共享材质当前无 map，统一走 disposeMaterialMap 兜底，防止未来扩展泄漏）
   if (geoCache) {
     for (const entry of Object.values(geoCache)) {
       entry.boxGeo.dispose();
       entry.edgeGeo.dispose();
       entry.material.dispose();
       entry.edgeMaterial.dispose();
+      disposeMaterialMap(entry.material, disposedTextures);
+      disposeMaterialMap(entry.edgeMaterial, disposedTextures);
     }
     geoCache = null;
   }
@@ -599,6 +623,52 @@ function setupCameraRenderer(scene, canvasId, containerSpec) {
   return { renderer, camera };
 }
 
+/**
+ * V-01 修复：销毁指定容器的 renderer 并强制释放 WebGL context。
+ * 切换容器时先销毁旧 renderer（单活模式），保证任何时刻活跃 context ≤ 3。
+ * camera 为纯 JS 对象（无 GPU 资源），保留复用；OrbitControls 绑定 canvas，
+ * 随 renderer 一起释放，切换后懒重建。
+ */
+function disposeRenderer(canvasId) {
+  const renderer = renderers[canvasId];
+  if (renderer) {
+    try { renderer.dispose(); } catch (e) { console.warn(`[disposeRenderer] dispose fail ${canvasId}:`, e); }
+    if (renderer.forceContextLoss) {
+      try { renderer.forceContextLoss(); } catch (e) { /* noop */ }
+    }
+    delete renderers[canvasId];
+  }
+  const ctrl = controls[canvasId];
+  if (ctrl) {
+    try { ctrl.dispose(); } catch (e) { /* noop */ }
+    delete controls[canvasId];
+  }
+}
+
+/**
+ * V-01 修复：临时 renderer（截图用）。不注册进 renderers map，
+ * 使用后立即 dispose + forceContextLoss，避免 context 泄漏。
+ */
+function createTempRenderer(canvasId, targetWidth, targetHeight) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return null;
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
+  const w = targetWidth || canvas.clientWidth || (parentEl ? parentEl.clientWidth : 0) || 800;
+  const h = targetHeight || canvas.clientHeight || (parentEl ? parentEl.clientHeight : 0) || 600;
+  renderer.setSize(w, h, false);
+  renderer.setPixelRatio(1);
+  renderer.shadowMap.enabled = false;
+  return renderer;
+}
+
+function disposeTempRenderer(renderer) {
+  if (!renderer) return;
+  try { renderer.dispose(); } catch (e) { /* noop */ }
+  if (renderer.forceContextLoss) {
+    try { renderer.forceContextLoss(); } catch (e) { /* noop */ }
+  }
+}
+
 // ═══════════════════════════════════════════
 // 单 rAF 循环 — 仅渲染当前活跃场景
 // ═══════════════════════════════════════════
@@ -638,18 +708,35 @@ function showContainer(index) {
   allCanvases.forEach(c => { c.wrapper.style.display = 'none'; });
   target.wrapper.style.display = 'block';
 
+  // V-01 修复：切换前先销毁旧 renderer（单活模式），避免多容器各持 context 超限
+  const prevId = activeCanvasId;
+  if (prevId && prevId !== target.canvasId) {
+    disposeRenderer(prevId);
+  }
+
   // 切换活跃 scene
   activeCanvasId = target.canvasId;
+
+  // V-01 修复：懒创建 —— 仅对当前可见容器创建 renderer
+  let renderer = renderers[target.canvasId];
+  if (!renderer) {
+    const scene = scenes[target.canvasId];
+    const spec = containerSpecs[target.canvasId];
+    if (scene && spec) {
+      setupCameraRenderer(scene, target.canvasId, spec);
+      renderer = renderers[target.canvasId];
+    }
+  }
 
   // resize 到最新尺寸
   const canvas = document.getElementById(target.canvasId);
   if (canvas) {
-    const renderer = renderers[target.canvasId];
     const camera = cameras[target.canvasId];
     if (renderer && camera) {
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
-      renderer.setSize(w, h);
+      // V-04 修复：updateStyle=false —— 仅更新 drawing buffer，CSS 尺寸始终由样式表控制
+      renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
     }
@@ -678,7 +765,8 @@ function setupResizeObserver() {
     const h = canvas.clientHeight;
     if (w === 0 || h === 0) return;
 
-    renderer.setSize(w, h);
+    // V-04 修复：updateStyle=false —— 仅更新 drawing buffer，CSS 尺寸始终由样式表控制
+    renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   });
@@ -767,48 +855,78 @@ function createPresetButtons() {
 // ═══════════════════════════════════════════
 
 function captureScreenshot(canvasId) {
-  const renderer = renderers[canvasId];
-  if (!renderer) return null;
-  const scene = scenes[canvasId];
-  const camera = cameras[canvasId];
-  if (scene && camera) {
-    try { renderer.render(scene, camera); } catch (err) {
-      console.warn(`[captureScreenshot] render fail ${canvasId}:`, err);
-      return null;
-    }
-  }
-  return renderer.domElement.toDataURL('image/png');
-}
-
-function captureScreenshotFixed(canvasId, targetWidth = 800, targetHeight = 600) {
-  const renderer = renderers[canvasId];
-  if (!renderer) return null;
   const scene = scenes[canvasId];
   const camera = cameras[canvasId];
   if (!scene || !camera) return null;
 
-  const originalSize = renderer.getSize(new THREE.Vector2());
-  const originalAspect = camera.aspect;
+  let renderer = renderers[canvasId];
+  let temp = null;
+  if (!renderer) {
+    // V-01 修复：无活跃 renderer（懒创建模式）时临时创建，截图后即销毁
+    temp = createTempRenderer(canvasId);
+    renderer = temp;
+  }
+  if (!renderer) return null;
 
-  renderer.setSize(targetWidth, targetHeight);
-  camera.aspect = targetWidth / targetHeight;
-  camera.updateProjectionMatrix();
-
-  let dataUrl = null;
   try {
     renderer.render(scene, camera);
-    dataUrl = renderer.domElement.toDataURL('image/png');
+    return renderer.domElement.toDataURL('image/png');
   } catch (err) {
-    console.warn(`[captureScreenshotFixed] render fail ${canvasId}:`, err);
+    console.warn(`[captureScreenshot] render fail ${canvasId}:`, err);
+    return null;
+  } finally {
+    if (temp) disposeTempRenderer(temp);
+  }
+}
+
+function captureScreenshotFixed(canvasId, targetWidth = 800, targetHeight = 600) {
+  const scene = scenes[canvasId];
+  const camera = cameras[canvasId];
+  if (!scene || !camera) return null;
+
+  const renderer = renderers[canvasId];
+  if (renderer) {
+    const originalSize = renderer.getSize(new THREE.Vector2());
+    const originalAspect = camera.aspect;
+
+    renderer.setSize(targetWidth, targetHeight, false);
+    camera.aspect = targetWidth / targetHeight;
+    camera.updateProjectionMatrix();
+
+    let dataUrl = null;
+    try {
+      renderer.render(scene, camera);
+      dataUrl = renderer.domElement.toDataURL('image/png');
+    } catch (err) {
+      console.warn(`[captureScreenshotFixed] render fail ${canvasId}:`, err);
+    }
+
+    renderer.setSize(originalSize.x, originalSize.y, false);
+    camera.aspect = originalAspect;
+    camera.updateProjectionMatrix();
+    if (scene && camera) {
+      try { renderer.render(scene, camera); } catch (err) { /* ignore */ }
+    }
+    return dataUrl;
   }
 
-  renderer.setSize(originalSize.x, originalSize.y);
-  camera.aspect = originalAspect;
-  camera.updateProjectionMatrix();
-  if (scene && camera) {
-    try { renderer.render(scene, camera); } catch (err) { /* ignore */ }
+  // V-01 修复：无活跃 renderer（懒创建模式）→ 临时创建、截图、即销毁
+  const temp = createTempRenderer(canvasId, targetWidth, targetHeight);
+  if (!temp) return null;
+  const originalAspect = camera.aspect;
+  try {
+    camera.aspect = targetWidth / targetHeight;
+    camera.updateProjectionMatrix();
+    temp.render(scene, camera);
+    return temp.domElement.toDataURL('image/png');
+  } catch (err) {
+    console.warn(`[captureScreenshotFixed] render fail ${canvasId}:`, err);
+    return null;
+  } finally {
+    camera.aspect = originalAspect;
+    camera.updateProjectionMatrix();
+    disposeTempRenderer(temp);
   }
-  return dataUrl;
 }
 
 // ═══════════════════════════════════════════
@@ -927,6 +1045,21 @@ function buildVisualization(result, parentId) {
   disposed = false;
   parentEl = parent;
   parent.innerHTML = '';
+
+  // T3: 大数据量渲染提示（>500 件时提示降级/分帧，避免浏览器卡死）
+  const MAX_SAFE_RENDER = 500;
+  let totalRenderItems = 0;
+  for (const c of result.containers) {
+    totalRenderItems += (c.placedItems || []).length;
+  }
+  if (totalRenderItems > MAX_SAFE_RENDER) {
+    const warning = document.createElement('div');
+    warning.style.cssText = 'position:absolute;top:48px;left:8px;right:8px;background:#FFF9E6;border:1px solid #E8D5A0;border-radius:8px;padding:8px 12px;font-size:11px;color:#8B7516;z-index:10;pointer-events:auto;';
+    warning.innerHTML = `⚠️ 物品种类较多（${totalRenderItems}件），3D 渲染可能较慢。`;
+    parent.appendChild(warning);
+    setTimeout(() => { if (warning.parentNode) warning.remove(); }, 8000);
+  }
+
   geoCache = {};
   allCanvases = [];
 
@@ -993,13 +1126,13 @@ function buildVisualization(result, parentId) {
       console.error(`[3D Diag] ❌ 箱${i + 1}: containerGroup 未创建！`);
     }
 
-    setupCameraRenderer(scene, canvas.id, containerSpec);
+    // V-01 修复：懒创建 —— 此处只记录规格，renderer 仅对当前可见容器创建（见 showContainer）
+    containerSpecs[canvas.id] = containerSpec;
   }
 
-  // 显示第一个
+  // 显示第一个（懒创建其 renderer）
   if (allCanvases.length > 0) {
-    activeCanvasId = allCanvases[0].canvasId;
-    allCanvases[0].wrapper.style.display = 'block';
+    showContainer(0);
   }
 
   // 创建 tooltip DOM

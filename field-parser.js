@@ -24,9 +24,24 @@ const FieldParser = (() => {
   /**
    * 组合尺寸正则
    * 匹配格式如 "1200×800×600"、"5.7*4.3*4.29"、"1200x800x600"
-   * 注意：每个数字部分只匹配整数或单个小数，防止贪婪匹配 "1.2.3"
+   * F-05: 每维度支持可选单位后缀："1.5m×2m×3m"、"1200mm×800mm×600mm"、"1.5m×800mm×60cm"
+   * 注意：
+   *  - 每个数字部分只匹配整数或单个小数，防止贪婪匹配 "1.2.3"
+   *  - 单位 alternation 长词在前（mm 在 m 前、inch 在 in 前、毫米/厘米 在 米 前），避免前缀误吞
    */
-  const COMBINED_DIM_PATTERN = /^([\d]+(?:\.[\d]+)?)\s*[×xX*]\s*([\d]+(?:\.[\d]+)?)\s*[×xX*]\s*([\d]+(?:\.[\d]+)?)$/;
+  const COMBINED_DIM_PATTERN = /^([\d]+(?:\.[\d]+)?)\s*(mm|cm|m|inch|in|ft|英尺|厘米|毫米|米)?\s*[×xX*]\s*([\d]+(?:\.[\d]+)?)\s*(mm|cm|m|inch|in|ft|英尺|厘米|毫米|米)?\s*[×xX*]\s*([\d]+(?:\.[\d]+)?)\s*(mm|cm|m|inch|in|ft|英尺|厘米|毫米|米)?$/;
+
+  /**
+   * 尺寸单位换算表：单位后缀 → 米(m) 倍率（F-05）
+   * 1mm=0.001、1cm=0.01、1m=1、1inch=0.0254、1ft=0.3048
+   */
+  const DIM_UNIT_TO_M = {
+    'mm': 0.001, '毫米': 0.001,
+    'cm': 0.01, '厘米': 0.01,
+    'm': 1, '米': 1,
+    'inch': 0.0254, 'in': 0.0254,
+    'ft': 0.3048, '英尺': 0.3048
+  };
 
   // ── 关键词字典 ──
   const FIELD_KEYWORDS = {
@@ -138,15 +153,20 @@ const FieldParser = (() => {
     if (!headerRow) return [];
 
     const types = [];
+    const warnings = [];
+    const colCount = headerRow.length;
     for (let col = 0; col < headerRow.length; col++) {
       const headerText = String(headerRow[col] || '').trim();
-      types.push(classifyColumn(headerText, col, sampleRows));
+      types.push(classifyColumn(headerText, col, sampleRows, colCount, warnings));
     }
+    // 附加警告通道（数组可带属性，公开签名/序列化形态不变）
+    types.warnings = warnings;
     return types;
   }
 
-  function classifyColumn(headerText, colIndex, sampleRows) {
-    const h = headerText.toLowerCase();
+  function classifyColumn(headerText, colIndex, sampleRows, colCount, warnings) {
+    // F-06: 全角括号归一化（"长（毫米）" → "长(毫米)"，让 '长(mm)' 等关键词命中，避免列分类失败）
+    const h = headerText.toLowerCase().replace(/[（）]/g, m => m === '（' ? '(' : ')');
     const headerLines = h.split(/[\r\n\s]+/).filter(Boolean);
 
     // 1. 关键词匹配
@@ -159,16 +179,21 @@ const FieldParser = (() => {
       if (char === 'W') return { field: 'width', confidence: 'high' };
       if (char === 'H') return { field: 'height', confidence: 'high' };
     }
-    // 如果整个表头就是纯单字符，直接精确匹配
+    // D-13: 关键词按长度降序匹配（长关键词优先），避免 "单件毛重(kg)" 被 quantity 的 "件" 子串抢占
+    // 单字符关键词仅做整头/整行精确匹配，多字符关键词才允许子串匹配
+    const rankedKeywords = [];
     for (const [field, keywords] of Object.entries(FIELD_KEYWORDS)) {
       for (const kw of keywords) {
-        const kl = kw.toLowerCase();
-        if (kw.length === 1) {
-          // 单行精确匹配，或多行中的任意一行精确匹配
-          if (h === kl || headerLines.some(line => line === kl)) return { field, confidence: 'high' };
-        } else {
-          if (h.includes(kl) || h === kl || headerLines.some(line => line.includes(kl) || line === kl)) return { field, confidence: 'high' };
-        }
+        rankedKeywords.push({ field, kl: kw.toLowerCase(), len: kw.length });
+      }
+    }
+    rankedKeywords.sort((a, b) => b.len - a.len);
+    for (const { field, kl, len } of rankedKeywords) {
+      if (len === 1) {
+        // 单行精确匹配，或多行中的任意一行精确匹配
+        if (h === kl || headerLines.some(line => line === kl)) return { field, confidence: 'high' };
+      } else {
+        if (h === kl || headerLines.some(line => line === kl || line.includes(kl))) return { field, confidence: 'high' };
       }
     }
 
@@ -180,19 +205,36 @@ const FieldParser = (() => {
 
     if (samples.length > 0) {
       // 型号模式：字母数字组合如 NIG-25-2630-124-01
+      // F-03: 纯数字（≥4 位）不得判为型号 → 至少含一个字母，或含 -/./_ 分隔符
       const modelPattern = /^[A-Za-z0-9\-\_\.\/]+$/;
-      const modelCount = samples.filter(s => modelPattern.test(s) && s.length > 3).length;
+      const modelCount = samples.filter(s =>
+        modelPattern.test(s) && s.length > 3 &&
+        (/[A-Za-z]/.test(s) || /[\-\_\.\/]/.test(s))
+      ).length;
       if (modelCount >= samples.length * 0.6) {
         return { field: 'model', confidence: 'medium' };
       }
 
-      // 数量列：纯整数
+      // 纯整数列（F-03 优先级重排：尺寸表头 > 列数推断 > 数量）
       const intCount = samples.filter(s => /^\d+$/.test(s)).length;
       if (intCount >= samples.length * 0.7) {
-        // 看数字范围：>100 → 可能是数量或重量
         const nums = samples.filter(s => /^\d+$/.test(s)).map(Number);
         const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
-        if (avg < 1000 && nums.every(n => n === Math.floor(n))) {
+        // ① 表头含尺寸关键词（长/宽/高/L/W/H/尺寸/dimension 等）→ 优先判尺寸
+        const dimHeaderHit = /长|宽|高|尺寸|length|width|height|dimension|dimension/i.test(h);
+        if (dimHeaderHit) {
+          return { field: 'possibleDimension', confidence: 'medium' };
+        }
+        // ② 无尺寸表头关键词：列数 ≥3 且数值范围合理（1~50000）且全整数 → 推断为尺寸列并推警告
+        const colCountNum = (typeof colCount === 'number' && colCount > 0) ? colCount : (colIndex + 1);
+        if (colCountNum >= 3 && nums.length > 0 && nums.every(n => n >= 1 && n <= 50000)) {
+          if (warnings && !warnings.includes(`col_dim_inferred_${colIndex}`)) {
+            warnings.push(`列${colIndex + 1}（表头"${headerText || '(空)'}"）无尺寸关键词，但数值范围疑似尺寸列，已推断为尺寸（请确认）`);
+          }
+          return { field: 'possibleDimension', confidence: 'low' };
+        }
+        // ③ 数量判定：avg<1000 且全整数，且不超过合理上限（>100000 不判数量）
+        if (avg < 1000 && nums.every(n => n === Math.floor(n)) && nums.every(n => n <= 100000)) {
           return { field: 'quantity', confidence: 'medium' };
         }
       }
@@ -231,24 +273,41 @@ const FieldParser = (() => {
   // ── 单位推断 ──
 
   /**
-   * 推断尺寸列的单位
-   * > 1000 → mm, < 30 → 可能是 m, 否则 cm
+   * F-04: 带歧义信号的单位推断（内部使用）
+   * 逻辑与 inferUnit 完全一致，额外返回 ambiguous 信号：
+   * 当推断结果为 cm 且 max 落在 [50, 2000]（如 200×150×100、800×600×500，
+   * 数值上既可能厘米也可能毫米）时返回 { unit: 'cm', ambiguous: true }。
+   * 供 extractItems 推送"尺寸单位疑似厘米，若实际为毫米请确认"警告。
    */
-  function inferUnit(values) {
+  function inferUnitWithSignal(values) {
     const nums = values.map(v => parseFloat(v)).filter(n => !isNaN(n) && n > 0);
-    if (nums.length === 0) return 'cm';
+    if (nums.length === 0) return { unit: 'cm', ambiguous: false };
 
     const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
     const max = Math.max(...nums);
     const min = Math.min(...nums);
 
-    if (max > UNIT_INFERENCE.MM_MAX_THRESHOLD) return 'mm';        // 如 12000 → 明显毫米
-    if (avg > UNIT_INFERENCE.MM_AVG_THRESHOLD) return 'mm';
+    let unit;
+    if (max > UNIT_INFERENCE.MM_MAX_THRESHOLD) unit = 'mm';        // 如 12000 → 明显毫米
+    else if (avg > UNIT_INFERENCE.MM_AVG_THRESHOLD) unit = 'mm';
     // 增强：全部维度都 ≥100 且最大值 ≥1000 → 工业装箱单典型毫米（如 2500X2750X2800）。
     // 厘米下 1000+ 意味着 10m+ 的货物，在装箱场景极不合理；毫米下 100 是 10cm 小件。
-    if (min >= 100 && max >= 1000) return 'mm';
-    if (avg < UNIT_INFERENCE.M_AVG_THRESHOLD && max < UNIT_INFERENCE.M_MAX_THRESHOLD) return 'm'; // 如 1.2, 5.8 → 米级别
-    return 'cm';                         // 30~2000 → 厘米
+    else if (min >= 100 && max >= 1000) unit = 'mm';
+    else if (avg < UNIT_INFERENCE.M_AVG_THRESHOLD && max < UNIT_INFERENCE.M_MAX_THRESHOLD) unit = 'm'; // 如 1.2, 5.8 → 米级别
+    else unit = 'cm';                         // 30~2000 → 厘米
+
+    // F-04: 判 cm 且 max∈[50,2000] → 可能是 mm（mm 量纲下 50~2000 即 5cm~2m，装箱场景常见）
+    const ambiguous = unit === 'cm' && max >= 50 && max <= 2000;
+    return { unit, ambiguous };
+  }
+
+  /**
+   * 推断尺寸列的单位
+   * > 1000 → mm, < 30 → 可能是 m, 否则 cm
+   * 公开 API 签名保持 string（歧义信号走内部 inferUnitWithSignal）
+   */
+  function inferUnit(values) {
+    return inferUnitWithSignal(values).unit;
   }
 
   /**
@@ -258,7 +317,14 @@ const FieldParser = (() => {
    * @returns {string|null} 'mm' | 'cm' | 'm' | null
    */
   function detectUnitFromHeader(headerText) {
-    const h = String(headerText || '').toLowerCase();
+    // F-06: 全角括号先归一化（"长（毫米）" → "长(毫米)"），再检测中文尺寸单位
+    let h = String(headerText || '').toLowerCase().replace(/[（）]/g, m => m === '（' ? '(' : ')');
+
+    // F-06: 中文尺寸单位优先（长词在前："毫米/厘米" 含 "米" 子串，必须排在 "米" 前）
+    // 重量单位（公斤/千克/克/吨/磅/盎司）由 detectWeightUnitFromHeader 负责，此处不重复实现
+    if (/毫米/.test(h)) return 'mm';
+    if (/厘米/.test(h)) return 'cm';
+    if (/米/.test(h)) return 'm';
 
     // mm: matches "mm", "millimeter", "millimeters"
     if (/mm|millimet/i.test(h)) return 'mm';
@@ -276,6 +342,80 @@ const FieldParser = (() => {
     return null;
   }
 
+  /**
+   * 从表头文字中检测重量单位（F-02 扩展：lb/oz/g/ton 支持）
+   * 检测顺序：kg → ton → lb → oz → g → t（长词优先，避免 "kg" 的 "g"、"ton" 的 "t" 误匹配）
+   * @returns {string|null} 'kg' | 'g' | 'ton' | 'lb' | 'oz' | null
+   */
+  function detectWeightUnitFromHeader(headerText) {
+    const h = String(headerText || '').toLowerCase();
+    if (/千克|公斤|kilogram|kilograms|kg/.test(h)) return 'kg';
+    if (/吨|tonne|tonnes|metric ton|\bton\b|\btons\b/.test(h)) return 'ton';
+    if (/磅|pound|pounds|\blb\b|\blbs\b/.test(h)) return 'lb';
+    if (/盎司|ounce|ounces|\boz\b/.test(h)) return 'oz';
+    if (/克|gram|grams|\bg\b/.test(h)) return 'g';
+    if (/\bt\b/.test(h)) return 'ton';
+    return null;
+  }
+
+  /**
+   * 重量单位换算表：单位后缀/表头单位 → kg 倍率
+   * 1g=0.001kg、1t=1000kg、1lb=0.4536kg、1oz=0.02835kg
+   */
+  const WEIGHT_UNIT_MAP = {
+    'kg': 1, '千克': 1, '公斤': 1,
+    'g': 0.001, '克': 0.001, 'gram': 0.001, 'grams': 0.001,
+    't': 1000, 'ton': 1000, 'tons': 1000, '吨': 1000,
+    'lb': 0.4536, 'lbs': 0.4536, 'pound': 0.4536, 'pounds': 0.4536, '磅': 0.4536,
+    'oz': 0.02835, 'ounce': 0.02835, 'ounces': 0.02835, '盎司': 0.02835
+  };
+
+  /**
+   * F-02: 解析单行重量原始值 → kg
+   * 优先级：行内单位后缀 > 表头单位 > 原数值（启发式吨转换由调用方按全列判定）
+   * @param {*} raw 原始单元格值
+   * @param {string|null} headerUnit 表头单位（detectWeightUnitFromHeader 结果）
+   * @returns {{ kg: number, unit: string|null, warning: string|null }}
+   */
+  function parseWeightValue(raw, headerUnit) {
+    if (raw == null) return { kg: NaN, unit: null, warning: null };
+    let s = String(raw).trim();
+    if (s === '') return { kg: NaN, unit: null, warning: null };
+    // 全角转半角（数字/小数点/字母，兼容 "５００ｇ" 等全角写法）
+    s = s.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    s = s.replace(/．/g, '.');
+    s = s.replace(/[Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    s = s.trim();
+
+    // 1) 数值 + 单位后缀（如 "500g" "5lb" "2.5kg" "1t" "5 磅"）
+    const unitMatch = s.match(/^([+-]?\d+(?:\.\d+)?)\s*([a-zA-Z]+|千克|公斤|克|吨|磅|盎司)?$/);
+    if (unitMatch) {
+      const num = parseFloat(unitMatch[1]);
+      const suffix = unitMatch[2] ? unitMatch[2].toLowerCase() : null;
+      if (suffix && WEIGHT_UNIT_MAP[suffix] != null) {
+        return { kg: num * WEIGHT_UNIT_MAP[suffix], unit: suffix, warning: null };
+      }
+      if (suffix) {
+        // 未知字母后缀（如 "500pcs"）→ 按原数值处理并提示
+        return { kg: num, unit: null, warning: `检测到无法识别的重量单位 "${unitMatch[2]}"，按原数值处理` };
+      }
+      // 无后缀 → 表头单位优先
+      if (headerUnit && WEIGHT_UNIT_MAP[headerUnit] != null) {
+        return { kg: num * WEIGHT_UNIT_MAP[headerUnit], unit: headerUnit, warning: null };
+      }
+      return { kg: num, unit: null, warning: null };
+    }
+
+    // 2) 科学计数法（"1.5E3"/"1e3"），E 后带数字不会被上面的字母后缀正则匹配
+    if (/^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$/.test(s)) {
+      const sci = parseFloat(s);
+      return { kg: isNaN(sci) ? NaN : sci, unit: null, warning: null };
+    }
+
+    // 3) 兜底：normalizeNumber（剥除其他字符）
+    return { kg: normalizeNumber(s), unit: null, warning: null };
+  }
+
   // ── 数据清洗 ──
 
   function normalizeNumber(str) {
@@ -284,6 +424,14 @@ const FieldParser = (() => {
     let s = String(str).replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
     // 全角小数点
     s = s.replace(/．/g, '.');
+    // 全角字母转半角（避免 "５００ｇ" 等全角单位后缀干扰）
+    s = s.replace(/[Ａ-Ｚａ-ｚ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    s = s.trim();
+    // C-N2: 科学计数法优先检测（"1.5E3"/"1e3"），直接 parseFloat，不走字符剥离
+    if (/^[+-]?\d+(?:\.\d+)?[eE][+-]?\d+$/.test(s)) {
+      const sci = parseFloat(s);
+      return isNaN(sci) ? NaN : sci;
+    }
     // 移除非数字字符（保留小数点和负号）
     s = s.replace(/[^\d\.\-]/g, '');
     // 多个小数点视为无效数据
@@ -403,9 +551,16 @@ const FieldParser = (() => {
 
     // 列分类
     const colTypes = classifyColumns(headerRow, dataRows);
+    const colWarnings = colTypes.warnings || [];
 
     // 提取数据
     const extractResult = extractItems(dataRows, headerRow, colTypes);
+
+    // 合并列分类警告与提取警告（去重）
+    const mergedWarnings = [];
+    for (const w of [...colWarnings, ...(extractResult.warnings || [])]) {
+      if (!mergedWarnings.includes(w)) mergedWarnings.push(w);
+    }
 
     // 生成映射建议
     const mapping = buildMapping(colTypes, headerRow);
@@ -417,7 +572,7 @@ const FieldParser = (() => {
       totalDataRows: dataRows.length,
       mapping,
       items: extractResult.items,
-      warnings: extractResult.warnings,
+      warnings: mergedWarnings,
       totalRawRows: cleanedRows.length
     };
   }
@@ -437,6 +592,34 @@ const FieldParser = (() => {
       }
     }
     return cleaned;
+  }
+
+  /**
+   * D-16: 从全部尺寸列采样数值用于单位推断
+   * 组合列（"2500X2750X2800"）拆分出所有维度参与推断，
+   * 避免 parseFloat 只取第一个数字导致范围失真（如 2500 vs 2500/2750/2800）。
+   */
+  function collectDimSamples(dataRows, dimIndices) {
+    const allValues = [];
+    for (const idx of dimIndices) {
+      if (idx < 0) continue;
+      dataRows.forEach(r => {
+        const v = r[idx];
+        if (v == null || v === '') return;
+        const rawStr = String(v).trim();
+        if (/[×xX*]/.test(rawStr)) {
+          const parts = rawStr.split(/[×xX*]/);
+          for (const part of parts) {
+            const n = parseFloat(part);
+            if (!isNaN(n) && n > 0) allValues.push(n);
+          }
+        } else {
+          const n = parseFloat(v);
+          if (!isNaN(n)) allValues.push(n);
+        }
+      });
+    }
+    return allValues;
   }
 
   /**
@@ -516,40 +699,30 @@ const FieldParser = (() => {
 
       if (headerUnits.size === 1) {
         dimUnit = [...headerUnits][0];
-      } else if (headerUnits.size > 1) {
-        warnings.push('表头中检测到多个不同的尺寸单位 (' +
-          [...headerUnits].join(', ') + ')，将根据数值自动推断');
-        const lengthValues = dataRows.map(r => r[lengthCol]).filter(v => v != null && v !== '');
-        dimUnit = inferUnit(lengthValues);
-      // I1: 推断单位时从实际拆分的 l/w/h 中采样，而非仅从 lengthCol
-    } else {
-      // 从全部尺寸列的值中采样：优先组合列拆分后的各维度，其次单独列
-      const allValues = [];
-      for (const idx of dimIndices) {
-        if (idx >= 0) {
-          dataRows.forEach(r => {
-            const v = r[idx];
-            if (v != null && v !== '') {
-              const rawStr = String(v).trim();
-              // 组合列（"2500X2750X2800"）拆分出所有维度参与单位推断，
-              // 避免 parseFloat 只取第一个数字导致范围失真（如 2500 vs 2500/2750/2800）。
-              if (/[×xX*]/.test(rawStr)) {
-                const parts = rawStr.split(/[×xX*]/);
-                for (const part of parts) {
-                  const n = parseFloat(part);
-                  if (!isNaN(n) && n > 0) allValues.push(n);
-                }
-              } else {
-                const n = parseFloat(v);
-                if (!isNaN(n)) allValues.push(n);
-              }
-            }
-          });
+      } else {
+        // D-16: 多单位冲突分支同样使用"全维度 + 组合尺寸拆分"采样（与无表头单位分支一致）
+        // F-04: 统一走 inferUnitWithSignal，判 cm 且 max∈[50,2000] 时推"疑似毫米"歧义警告
+        if (headerUnits.size > 1) {
+          warnings.push('表头中检测到多个不同的尺寸单位 (' +
+            [...headerUnits].join(', ') + ')，将根据数值自动推断');
+        }
+        const allValues = collectDimSamples(dataRows, dimIndices);
+        const sig = inferUnitWithSignal(allValues.length > 0 ? allValues : []);
+        dimUnit = sig.unit;
+        if (sig.ambiguous && sig.unit === 'cm' && !warnings.includes('dim_unit_ambiguous')) {
+          warnings.push('尺寸单位疑似厘米，若实际为毫米请确认');
+        }
+        if (headerUnits.size === 0 && !warnings.includes('dim_unit_inferred')) {
+          warnings.push(`表头未声明尺寸单位，已根据数值推断为 ${dimUnit}，请确认单位是否正确`);
         }
       }
-      dimUnit = inferUnit(allValues.length > 0 ? allValues : []);
     }
-  }
+
+    // 重量表头单位（F-02：kg/g/t/lb/oz 检测，供整列换算与 F-01 启发式判定）
+    let weightHeaderUnit = null;
+    if (weightCol >= 0) {
+      weightHeaderUnit = detectWeightUnitFromHeader(headerRow[weightCol]);
+    }
 
     for (let i = 0; i < dataRows.length; i++) {
       const row = dataRows[i];
@@ -559,6 +732,8 @@ const FieldParser = (() => {
       if (!model) continue;
 
       let rawL = NaN, rawW = NaN, rawH = NaN;
+      // F-05: 组合尺寸若含行内单位后缀，rawL/W/H 直接按后缀换算为米（混合单位无法统一换算）
+      let combinedDimsInMeters = false;
 
       // 单列组合尺寸拆分：先检查是否包含分隔符，避免 normalizeNumber 误解析
       // 如 "5.7*4.3*4.29" → normalizeNumber 会得到 5.74（假数值），拦截拆分逻辑
@@ -572,11 +747,37 @@ const FieldParser = (() => {
             .replace(/\.\s+(\d)/g, '.$1');             // "2. 12" → "2.12"
           const splitMatch = cleaned.match(COMBINED_DIM_PATTERN);
           if (splitMatch) {
-            rawL = parseFloat(splitMatch[1]);
-            rawW = parseFloat(splitMatch[2]);
-            rawH = parseFloat(splitMatch[3]);
+            // F-05: 每维度可选单位后缀（"1.5m×2m×3m"、"1200mm×800mm×600mm"、混合单位）
+            // 有后缀 → 按后缀换算为米；无后缀 → 沿用整列推断单位 dimUnit
+            const dimParts = [
+              { num: parseFloat(splitMatch[1]), unit: splitMatch[2] || null },
+              { num: parseFloat(splitMatch[3]), unit: splitMatch[4] || null },
+              { num: parseFloat(splitMatch[5]), unit: splitMatch[6] || null }
+            ];
+            let rowUnitConflict = false;
+            const meters = dimParts.map(dp => {
+              if (dp.unit && DIM_UNIT_TO_M[dp.unit] != null) {
+                // 后缀与整列推断单位不一致 → 以后缀为准并推警告（F-05）
+                if (dimUnit != null && DIM_UNIT_TO_M[dimUnit] != null &&
+                    DIM_UNIT_TO_M[dimUnit] !== DIM_UNIT_TO_M[dp.unit]) {
+                  rowUnitConflict = true;
+                }
+                return dp.num * DIM_UNIT_TO_M[dp.unit];
+              }
+              // 无后缀 → 整列推断单位换算
+              if (dimUnit === 'mm') return dp.num / 1000;
+              if (dimUnit === 'cm') return dp.num / 100;
+              return dp.num; // 'm' 或未知 → 原值即米
+            });
+            rawL = meters[0];
+            rawW = meters[1];
+            rawH = meters[2];
+            combinedDimsInMeters = true;
             if (!warnings.includes('combined_dim_split')) {
               warnings.push(`检测到单列组合尺寸格式（如 "${rawStr}"），已自动拆分为长/宽/高`);
+            }
+            if (rowUnitConflict && !warnings.includes('combined_dim_unit_conflict')) {
+              warnings.push(`行内尺寸单位与整列推断单位（${dimUnit}）不一致，已按行内单位后缀换算`);
             }
           }
         }
@@ -586,35 +787,57 @@ const FieldParser = (() => {
       if (isNaN(rawW) && widthCol >= 0) rawW = normalizeNumber(row[widthCol]);
       if (isNaN(rawH) && heightCol >= 0) rawH = normalizeNumber(row[heightCol]);
       const rawQty = qtyCol >= 0 ? normalizeNumber(row[qtyCol]) : 1;
-      const rawWeight = weightCol >= 0 ? normalizeNumber(row[weightCol]) : NaN;
 
       if (isNaN(rawL) || isNaN(rawW) || isNaN(rawH)) {
         warnings.push(`第${i + 2}行 "${model}" 尺寸数据不完整，已跳过`);
         continue;
       }
-      if (rawL <= 0 || rawW <= 0 || rawH <= 0) continue;
+      // F-10 修复：非正尺寸行不再静默跳过，补 warning（与上方 NaN 分支口径一致）
+      if (rawL <= 0 || rawW <= 0 || rawH <= 0) {
+        warnings.push(`第${i + 2}行 "${model}" 尺寸非正（${rawL}×${rawW}×${rawH}），已跳过`);
+        continue;
+      }
 
       // 单位转换：统一转为米(m)
       let l = rawL, w = rawW, h = rawH;
-      if (dimUnit === 'mm') { l /= 1000; w /= 1000; h /= 1000; }
-      else if (dimUnit === 'cm') { l /= 100; w /= 100; h /= 100; }
-      // 如果dimUnit是'm'，不需要转换
+      if (!combinedDimsInMeters) {
+        if (dimUnit === 'mm') { l /= 1000; w /= 1000; h /= 1000; }
+        else if (dimUnit === 'cm') { l /= 100; w /= 100; h /= 100; }
+        // 如果dimUnit是'm'，不需要转换
+      }
 
-      // 重量单位推断
-      let weight = rawWeight;
-      if (!isNaN(rawWeight)) {
-        // 看是否可能是吨
-        if (rawWeight < 10 && rawWeight > 0) {
-          const allWeights = dataRows.map(r => weightCol >= 0 ? normalizeNumber(r[weightCol]) : NaN).filter(n => !isNaN(n));
-          const maxW = Math.max(...allWeights, 0);
-          if (maxW < 10) {
-            weight = rawWeight * 1000; // 吨转kg
-            if (!warnings.includes('weight_unit_converted')) {
-              warnings.push('检测到重量可能以吨为单位，已自动转为kg');
-            }
+      // F-02: 重量解析（行内单位后缀 > 表头单位 > 启发式）
+      let weight = NaN;
+      let weightNote = null;
+      if (weightCol >= 0 && String(row[weightCol] || '').trim() !== '') {
+        const parsed = parseWeightValue(row[weightCol], weightHeaderUnit);
+        weight = parsed.kg;
+        if (parsed.warning) weightNote = parsed.warning;
+        // F-01: 吨启发式仅在"本行无单位后缀 + 表头无单位或明确吨 + 全列无显式单位行 + 全列 <10"时触发
+        if (!isNaN(weight) && weight > 0 && weight < 10 && parsed.unit == null) {
+          const hdrAllowsTon = weightHeaderUnit == null || WEIGHT_UNIT_MAP[weightHeaderUnit] === 1000;
+          const colHasExplicitUnit = dataRows.some(r => {
+            if (weightCol < 0 || String(r[weightCol] || '').trim() === '') return false;
+            return parseWeightValue(r[weightCol], weightHeaderUnit).unit != null;
+          });
+          const rawNums = dataRows
+            .map(r => weightCol >= 0 ? normalizeNumber(r[weightCol]) : NaN)
+            .filter(n => !isNaN(n) && n > 0);
+          const maxW = rawNums.length > 0 ? Math.max(...rawNums) : 0;
+          if (hdrAllowsTon && !colHasExplicitUnit && maxW < 10) {
+            weight = weight * 1000; // 吨转kg
+            weightNote = '检测到重量可能以吨为单位，已自动转为kg';
           }
         }
-      } else {
+      }
+      if (weightNote && !warnings.includes(weightNote)) warnings.push(weightNote);
+      // C-N3: 非正值/NaN 钳制为 0（负值推警告，与行级缺失处理一致）
+      if (!isNaN(weight) && weight <= 0) {
+        if (weight < 0 && !warnings.includes(`weight_non_positive_${i}`)) {
+          warnings.push(`第${i + 2}行 "${model}" 重量为非正值（${weight}），已置为 0`);
+        }
+        weight = 0;
+      } else if (isNaN(weight)) {
         weight = 0; // 无重量时设为0
       }
 

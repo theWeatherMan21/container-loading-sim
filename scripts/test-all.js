@@ -17,7 +17,8 @@ const assertSuites = [
   'verify-capacity.js',               // 容量验证
   'diagnose-classification.js',       // 分类诊断
   'diagnose-packing-trace.js',        // 装箱追踪
-  'diagnose-ems-fragmentation.js'     // EMS 碎片
+  'diagnose-ems-fragmentation.js',    // EMS 碎片
+  'test-regressions-r4.js'            // R4 轮 22 项修复回归固化（F-01..P-01）
 ];
 
 // 报告类套件：输出量大，仅检查退出码

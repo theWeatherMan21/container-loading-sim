@@ -89,7 +89,9 @@ const Planner = (() => {
         continue;
       }
 
-      // 选体积最小的
+      // 选体积最小的（P-04 业务权衡：按体积升序选最小箱，未区分 FR/OT 成本——
+      // FR 运费通常高于 OT，体积优先换取更少箱数/更少空间浪费；若需成本优先，
+      // 可改为 20OT→40OT→20FR→40FR 优先序，但需回归验证既有测试断言。）
       candidates.sort((a, b) => (a.L * a.W * a.H) - (b.L * b.W * b.H));
       const chosen = candidates[0];
 
@@ -199,7 +201,10 @@ const Planner = (() => {
               floorModels: new Set(),
               // 高度预筛：每型号按"同型号独占一层"估算层高（保守），
               // 防止大量薄板件在体积/足迹内但高度超箱的情况。
-              modelCounts: new Map()
+              modelCounts: new Map(),
+              // 修复(2026-08-06)：totalHeight 必须初始化，否则首次
+              // nextHeight = undefined + n = NaN，NaN > H 恒 false，可叠高度预筛完全失效。
+              totalHeight: 0
             };
             break;
           }
@@ -237,7 +242,8 @@ const Planner = (() => {
         stackableGroup.totalVolume += itemVol;
         stackableGroup.totalWeight += item.weight;
         stackableGroup.totalFloor = nextFloor;
-        stackableGroup.totalHeight = nextHeight;
+        // 修复(2026-08-06)：防御非有限高度值（历史 NaN 污染），退化按单层高度计
+        stackableGroup.totalHeight = Number.isFinite(nextHeight) ? nextHeight : item.h;
         stackableGroup.modelCounts.set(item.model, modelCount);
         if (isNewFloorModel) stackableGroup.floorModels.add(item.model);
       } else {

@@ -9,7 +9,9 @@ const CONTAINER_DB = {
     code: '20GP', name: '20尺标准柜', nameCN: '20尺普柜',
     L: 5.900, W: 2.352, H: 2.393,
     doorW: 2.340, doorH: 2.292,
-    payload: 30200,
+    // 修正(2026-08-06)：ISO 668 规定 20' 最大总重 30480kg，钢质普柜自重 ≥2200kg → payload ≤~28300；
+    // 取 28200（参考 Hapag-Lloyd 20GP 28230kg 口径，略保守）
+    payload: 28200,
     volume: 33.2,
     type: 'standard',
     allowOverHeight: false, allowOverWidth: false, allowOverLength: false
@@ -47,7 +49,8 @@ const CONTAINER_DB = {
     code: '20OT', name: '20尺开顶柜', nameCN: '20尺开顶',
     L: 5.895, W: 2.350, H: 2.380,
     doorW: 2.338, doorH: Infinity,
-    payload: 30050,
+    // 修正(2026-08-06)：20' 最大总重 30480kg，开顶柜自重（含可拆顶弓/篷布）> 普柜 → payload ≤~28100
+    payload: 28100,
     volume: 32.5,
     type: 'openTop',
     allowOverHeight: true, maxOverHeight: 0.5,
@@ -69,22 +72,31 @@ const CONTAINER_DB = {
     code: '20FR', name: '20尺框架柜', nameCN: '20尺框架',
     L: 5.612, W: 2.227, H: 2.219,
     doorW: Infinity, doorH: Infinity,
-    payload: 31260,
+    // 修正(2026-08-06)：原 31260kg 超过 20' 最大总重 30480kg（数学不可能）；
+    // 框架柜自重 ~2800kg+（无顶无侧壁但底板/端框更重）→ payload 取 27500
+    payload: 27500,
     volume: 5.612 * 2.227 * 2.219,
     type: 'flatRack',
-    allowOverHeight: true, maxOverHeight: 0.5,
-    allowOverWidth: true, maxOverWidth: 0.3,
+    // C-02 修复(2026-08-06)：FR 超限以 FR_REALITY_LIMITS 为唯一口径（超长0.5m前后合计/超宽2.0m左右合计/超高1.0m）。
+    // 超宽2.0m与超高1.0m为业务设定值，道路运输实际限值需业务确认（注释留存）。
+    allowOverHeight: true, maxOverHeight: 1.0,
+    allowOverWidth: true, maxOverWidth: 2.0,
     allowOverLength: true, maxOverLength: 0.5
   },
   '40FR': {
     code: '40FR', name: '40尺框架柜', nameCN: '40尺框架',
     L: 11.652, W: 2.224, H: 2.248,
     doorW: Infinity, doorH: Infinity,
-    payload: 44050,
+    // 修正(2026-08-06)：原 44050kg 隐含自重仅 950kg（不现实）。
+    // 40FR 为重型重载柜，主流承运人按 45t 最大总重（45000kg）运营，自重 ~5400kg → payload 取 39600
+    // （若按 40' 标准 30480kg 总重口径则为 ~28000；本库取 45t 重载柜口径，与 40FR 用途一致）
+    payload: 39600,
     volume: 11.652 * 2.224 * 2.248,
     type: 'flatRack',
-    allowOverHeight: true, maxOverHeight: 0.5,
-    allowOverWidth: true, maxOverWidth: 0.3,
+    // C-02 修复(2026-08-06)：FR 超限以 FR_REALITY_LIMITS 为唯一口径（超长0.5m前后合计/超宽2.0m左右合计/超高1.0m）。
+    // 超宽2.0m与超高1.0m为业务设定值，道路运输实际限值需业务确认（注释留存）。
+    allowOverHeight: true, maxOverHeight: 1.0,
+    allowOverWidth: true, maxOverWidth: 2.0,
     allowOverLength: true, maxOverLength: 0.5
   }
 };
@@ -93,7 +105,9 @@ const CONTAINER_DB = {
  * 箱型说明（尺寸/载重以 Hapag-Lloyd Container Specification 为准）：
  * - 标准柜 (standard)：20GP/40GP/40HQ/45HQ — 有门约束，不允许超限
  * - 开顶柜 (openTop)：20OT/40OT — 门高=∞（吊装），门宽约束有效，允许超高0.5m（40OT 为 9'6" 高柜规格）
- * - 框架柜 (flatRack)：20FR/40FR — 无门无侧壁，可超长0.5m/超宽0.3m/超高0.5m
+ * - 框架柜 (flatRack)：20FR/40FR — 无门无侧壁；FR 超限以 FR_REALITY_LIMITS 为唯一口径：
+ *   超长0.5m（前后合计）/超宽2.0m（左右合计）/超高1.0m。超宽2.0m与超高1.0m为业务设定值，
+ *   道路运输实际限值需业务确认；箱型声明字段数值与 FR_REALITY_LIMITS 保持一致（C-02 修复，避免双口径）。
  */
 
 const CONTAINER_LIST = Object.values(CONTAINER_DB);
@@ -118,12 +132,21 @@ const FR_REALITY_LIMITS = {
 function getEffectiveMaxDims(container, tolerance = 0.05) {
   const t = tolerance;
 
-  // 对FR箱型使用现实超限上限（符合用户指示：默认货物均可运输，但非无限超限）
+  // C-02 修复(2026-08-06)：FR 箱型优先读箱型声明字段（与 FR_REALITY_LIMITS 同步的口径），
+  // 声明缺失时回退 FR_REALITY_LIMITS（唯一权威默认值）。
+  // 超长0.5m（前后合计）/超宽2.0m（左右合计）/超高1.0m 为业务设定值；
+  // 道路运输实际限值需业务确认（注释留存）。
   if (container.type === 'flatRack') {
+    const overL = (typeof container.maxOverLength === 'number')
+      ? container.maxOverLength : FR_REALITY_LIMITS.maxOverLengthTotal;
+    const overW = (typeof container.maxOverWidth === 'number')
+      ? container.maxOverWidth : FR_REALITY_LIMITS.maxOverWidthTotal;
+    const overH = (typeof container.maxOverHeight === 'number')
+      ? container.maxOverHeight : FR_REALITY_LIMITS.maxOverHeightTotal;
     return {
-      maxL: container.L + FR_REALITY_LIMITS.maxOverLengthTotal,
-      maxW: container.W + FR_REALITY_LIMITS.maxOverWidthTotal,
-      maxH: container.H + FR_REALITY_LIMITS.maxOverHeightTotal
+      maxL: container.L + overL,
+      maxW: container.W + overW,
+      maxH: container.H + overH
     };
   }
 
@@ -157,16 +180,10 @@ function checkSizeConstraints(item, container, tolerance = 0.05) {
   const reasons = [];
   const eff = getEffectiveMaxDims(container, tolerance);
 
-  // 检查：是否存在至少一个方向能使货物放进箱子
-  // 对于3D装箱，需要在所有6个方向中至少一个满足
-  const orientations = [
-    { l: item.l, w: item.w, h: item.h },
-    { l: item.l, w: item.h, h: item.w },
-    { l: item.w, w: item.l, h: item.h },
-    { l: item.w, w: item.h, h: item.l },
-    { l: item.h, w: item.l, h: item.w },
-    { l: item.h, w: item.w, h: item.l }
-  ];
+  // C-04 修复(2026-08-06)：与 checkDoorConstraint/hasValidOrientationForContainer 统一走 getOrientations ——
+  // orientationFixed=true 时仅检查两个水平旋转朝向（{l,w,h} 与 {w,l,h}），不检查倒置方向；
+  // false/未定义时检查全部 6 方向（含去重），保证 validateItem 调用链上尺寸与门约束使用同一朝向集合。
+  const orientations = getOrientations(item);
 
   let anyFit = false;
   for (const o of orientations) {
@@ -178,8 +195,9 @@ function checkSizeConstraints(item, container, tolerance = 0.05) {
 
   if (!anyFit) {
     const dims = `${item.l.toFixed(3)}×${item.w.toFixed(3)}×${item.h.toFixed(3)}m`;
+    const orientationDesc = item.orientationFixed ? '2个水平旋转朝向' : '全部朝向';
     reasons.push(
-      `货物尺寸 ${dims} 无法在6个方向中具备匹配 ${container.code} ` +
+      `货物尺寸 ${dims} 无法在${orientationDesc}中匹配 ${container.code} ` +
       `可用尺寸范围(长≤${eff.maxL.toFixed(3)}m, 宽≤${eff.maxW.toFixed(3)}m, 高≤${eff.maxH.toFixed(3)}m)`
     );
   }
@@ -310,9 +328,9 @@ function validateItem(item, container, currentTotalWeight = 0, tolerance = 0.05)
 
 /**
  * 40FR 超长规则：
- * - 内长 11.70m 为基准；
- * - 若长宽高有 2 项及以上超过 11.70m，明确无法装载；
- * - 若仅 1 项超过 11.70m，允许作为 FR 超长货装载（需 3D 标出）。
+ * - 内长 11.652m（CONTAINER_DB['40FR'].L）为基准；
+ * - 若长宽高有 2 项及以上超过该基准，明确无法装载；
+ * - 若仅 1 项超过该基准，允许作为 FR 超长货装载（需 3D 标出）。
  * @param {object} item - {l, w, h}
  * @returns {{frAllowed: boolean, overLength: boolean, rotated: boolean, reason: string}}
  */
@@ -326,7 +344,7 @@ function checkFRLengthRule(item) {
   }
 
   if (overCount === 1) {
-    // 仅一项超过 11.70m：只能是长度方向超长，标记为 FR 超长货
+    // 仅一项超过内长基准：只能是长度方向超长，标记为 FR 超长货
     return { frAllowed: true, overLength: true, rotated: false, reason: `长度 ${Math.max(...dims).toFixed(2)}m 超过 40FR 内长 ${frL}m，作为超长货装载` };
   }
 
@@ -335,9 +353,20 @@ function checkFRLengthRule(item) {
 
 function hasValidOrientationForContainer(item, container, tolerance = 0.05) {
   const eff = getEffectiveMaxDims(container, tolerance);
+  const effDoorW = container.doorW - tolerance;
+  const effDoorH = container.doorH - tolerance;
+
+  // D-08 修复(2026-08-06)：同一候选朝向必须同时满足「尺寸 fit」与「门可通过」，
+  // 不再对内层 checkDoorConstraint 传入展开后朝向导致其重新展开 6 向（两套独立存在性 → 门过不去的货被误判可装）。
+  // 门截面直接取该候选朝向自身的 w×h（与 checkDoorConstraint 的容差公式一致：w ≤ doorW−t+t = doorW）。
   return getOrientations(item).some(o => {
     if (o.l > eff.maxL || o.w > eff.maxW || o.h > eff.maxH) return false;
-    return container.type === 'flatRack' || checkDoorConstraint(o, container, tolerance).pass;
+    if (container.type === 'flatRack') return true; // 框架柜无门
+    if (container.type === 'openTop') {
+      // 开顶柜仅门宽约束（高度由吊装解决）
+      return o.w <= effDoorW + tolerance;
+    }
+    return o.w <= effDoorW + tolerance && o.h <= effDoorH + tolerance;
   });
 }
 
@@ -774,12 +803,15 @@ function analyzeRecommendationFailure(items, tolerance = 0.05) {
   for (const spec of CONTAINER_LIST) {
     const failingItems = items.filter(item => !checkDoorConstraint(item, spec, tolerance).pass);
     if (failingItems.length > 0) {
-      const maxFailL = Math.max(...failingItems.map(i => i.l));
-      const maxFailW = Math.max(...failingItems.map(i => i.w));
-      const maxFailH = Math.max(...failingItems.map(i => i.h));
+      // C-07 修复：原实现分别取各维最大值拼出"假尺寸"（可能对应不同货物，诊断失真）。
+      // 改为取失败件中最大单件（按最长边降序）的真实三维，保证信息对应实际货物。
+      const worst = [...failingItems].sort((a, b) =>
+        Math.max(b.l, b.w, b.h) - Math.max(a.l, a.w, a.h)
+      )[0];
       reasons.push(
-        `${spec.nameCN}: 货物尺寸 ${maxFailL.toFixed(2)}×${maxFailW.toFixed(2)}×${maxFailH.toFixed(2)}m ` +
-        `超过门约束 ${spec.doorW.toFixed(2)}×${spec.doorH === Infinity ? '∞' : spec.doorH.toFixed(2)}m`
+        `${spec.nameCN}: 货物 "${worst.model || '未知'}" 尺寸 ${worst.l.toFixed(2)}×${worst.w.toFixed(2)}×${worst.h.toFixed(2)}m ` +
+        `（共 ${failingItems.length} 件不满足）超过门约束 ` +
+        `${spec.doorW.toFixed(2)}×${spec.doorH === Infinity ? '∞' : spec.doorH.toFixed(2)}m`
       );
     }
   }

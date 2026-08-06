@@ -27,6 +27,62 @@ const PdfExporter = (() => {
   const PAGE_W = 210;
   const PAGE_H = 297;
 
+  // ═══ P-01 修复：分页常量 ═══
+  const PAGE_ROWS_PER_SHEET = 45;   // 拆页后每页明细行数上限
+  const SINGLE_PAGE_MAX_ROWS = 60;  // 单页可容纳行数上限（≤此值保持既有单页行为，避免小单回归）
+  const SUMMARY_ROWS_PER_PAGE = 40; // 汇总页每页箱数上限
+
+  /**
+   * P-01 修复：纯函数 — 明细行按页拆分（不依赖 DOM，可直接单元测试）
+   * @param {Array} items placedItems
+   * @param {Object} [opts] { rowsPerSheet, singlePageMax }
+   * @returns {Array<{rows:Array, pageNo:number, pageCount:number, startIndex:number}>}
+   */
+  function buildDetailPages(items, opts = {}) {
+    const rowsPerSheet = opts.rowsPerSheet ?? PAGE_ROWS_PER_SHEET;
+    const singlePageMax = opts.singlePageMax ?? SINGLE_PAGE_MAX_ROWS;
+    const list = Array.isArray(items) ? items : [];
+    if (list.length === 0) {
+      return [{ rows: [], pageNo: 1, pageCount: 1, startIndex: 0 }];
+    }
+    // 小单（≤单页上限）保持既有单页行为，不强制拆页 → 无回归
+    if (list.length <= singlePageMax) {
+      return [{ rows: list, pageNo: 1, pageCount: 1, startIndex: 0 }];
+    }
+    const pageCount = Math.ceil(list.length / rowsPerSheet);
+    const pages = [];
+    for (let p = 0; p < pageCount; p++) {
+      pages.push({
+        rows: list.slice(p * rowsPerSheet, (p + 1) * rowsPerSheet),
+        pageNo: p + 1,
+        pageCount,
+        startIndex: p * rowsPerSheet
+      });
+    }
+    return pages;
+  }
+
+  /**
+   * P-01 修复：纯函数 — 汇总行按页拆分（多箱时汇总页超高同样拆页）
+   */
+  function buildSummaryPages(containers, rowsPerPage = SUMMARY_ROWS_PER_PAGE) {
+    const list = Array.isArray(containers) ? containers : [];
+    if (list.length === 0) {
+      return [{ rows: [], pageNo: 1, pageCount: 1, startIndex: 0 }];
+    }
+    const pageCount = Math.ceil(list.length / rowsPerPage);
+    const pages = [];
+    for (let p = 0; p < pageCount; p++) {
+      pages.push({
+        rows: list.slice(p * rowsPerPage, (p + 1) * rowsPerPage),
+        pageNo: p + 1,
+        pageCount,
+        startIndex: p * rowsPerPage
+      });
+    }
+    return pages;
+  }
+
   /**
    * 生成分页报告 HTML：每个 .pdf-page 块对应一个 A4 页
    */
@@ -40,21 +96,28 @@ const PdfExporter = (() => {
     const pages = [];
 
     // ═══ 页 1: 标题 + 方案汇总 ═══
-    let summaryRows = '';
-    for (let i = 0; i < result.containers.length; i++) {
-      const c = result.containers[i];
-      summaryRows += `
+    // P-01 修复：汇总行按需分页（每页 ≤40 箱）
+    const summaryPages = buildSummaryPages(result.containers);
+    for (const sp of summaryPages) {
+      let summaryRows = '';
+      for (let i = 0; i < sp.rows.length; i++) {
+        const c = sp.rows[i];
+        const boxNo = sp.startIndex + i + 1;
+        summaryRows += `
         <tr style="border-bottom:1px solid #EDE7E0;">
-          <td style="padding:6px 10px;text-align:center;">${i + 1}</td>
+          <td style="padding:6px 10px;text-align:center;">${boxNo}</td>
           <td style="padding:6px 10px;">${escapeHtml(c.containerCode)}</td>
           <td style="padding:6px 10px;text-align:right;">${c.placedItems.length}</td>
           <td style="padding:6px 10px;text-align:right;">${(c.totalVolume || 0).toFixed(2)}</td>
           <td style="padding:6px 10px;text-align:right;">${(c.totalWeight || 0).toFixed(0)}</td>
           <td style="padding:6px 10px;text-align:right;">${(c.utilization * 100).toFixed(1)}%</td>
         </tr>`;
-    }
+      }
+      const summaryTitle = sp.pageCount > 1
+        ? `一、方案汇总（第 ${sp.pageNo} 页 / 共 ${sp.pageCount} 页）`
+        : '一、方案汇总';
 
-    pages.push(`
+      pages.push(`
       <div class="pdf-page" style="width:794px;background:#fff;color:#3C3A36;padding:40px 48px;box-sizing:border-box;font-family:'Work Sans','PingFang SC','Microsoft YaHei',sans-serif;">
         <div style="text-align:center;margin-bottom:28px;border-bottom:2px solid #7B9A7B;padding-bottom:16px;">
           <h1 style="font-size:26px;color:#7B9A7B;margin:0 0 8px;">装箱方案报告</h1>
@@ -65,7 +128,7 @@ const PdfExporter = (() => {
             自动重算: ${config.autoRetry ? '是' : '否'}${config.recalculated ? '（已触发）' : ''}
           </p>
         </div>
-        <h2 style="font-size:16px;margin:0 0 10px;color:#3C3A36;">一、方案汇总</h2>
+        <h2 style="font-size:16px;margin:0 0 10px;color:#3C3A36;">${summaryTitle}</h2>
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
           <thead>
             <tr style="background:#EDE7E0;">
@@ -79,28 +142,35 @@ const PdfExporter = (() => {
           </thead>
           <tbody>${summaryRows}</tbody>
         </table>
+        ${sp.pageNo === sp.pageCount ? `
         <p style="font-size:12px;color:#7A7570;margin-top:14px;">
           总计: ${result.containerCount} 个${escapeHtml(result.containerCode || 'mixed')} |
           共装 ${result.totalPlaced} 件 |
           总重 ${(result.totalWeightLoaded || 0).toFixed(0)} kg |
           总容积 ${(result.totalVolumePlaced || 0).toFixed(2)} m³
-        </p>
+        </p>` : ''}
       </div>
-    `);
+      `);
+    }
 
-    // ═══ 每箱一页: 明细清单 ═══
+    // ═══ 每箱一页（行数超限时拆多页）: 明细清单 ═══
     for (let i = 0; i < result.containers.length; i++) {
       const c = result.containers[i];
-      const screenshot = visualization && visualization.getScreenshotFixed
-        ? visualization.getScreenshotFixed(i, 900, 560)
-        : null;
+      const detailPages = buildDetailPages(c.placedItems || []);
 
-      let rows = '';
-      for (let idx = 0; idx < c.placedItems.length; idx++) {
-        const p = c.placedItems[idx];
-        rows += `
+      for (const dp of detailPages) {
+        // 截图仅放在该箱第 1 页，避免每页重复渲染截图拖慢导出
+        const screenshot = dp.pageNo === 1 && visualization && visualization.getScreenshotFixed
+          ? visualization.getScreenshotFixed(i, 900, 560)
+          : null;
+
+        let rows = '';
+        for (let idx = 0; idx < dp.rows.length; idx++) {
+          const p = dp.rows[idx];
+          const seq = dp.startIndex + idx + 1;
+          rows += `
           <tr style="border-bottom:1px solid #F0EBE5;">
-            <td style="padding:5px 8px;text-align:center;border:1px solid #E5DED6;">${idx + 1}</td>
+            <td style="padding:5px 8px;text-align:center;border:1px solid #E5DED6;">${seq}</td>
             <td style="padding:5px 8px;border:1px solid #E5DED6;">${escapeHtml(p.model)}</td>
             <td style="padding:5px 8px;text-align:right;border:1px solid #E5DED6;">${p.l.toFixed(2)}</td>
             <td style="padding:5px 8px;text-align:right;border:1px solid #E5DED6;">${p.w.toFixed(2)}</td>
@@ -108,12 +178,16 @@ const PdfExporter = (() => {
             <td style="padding:5px 8px;text-align:right;border:1px solid #E5DED6;">${p.weight.toFixed(1)}</td>
             <td style="padding:5px 8px;text-align:center;border:1px solid #E5DED6;">(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})</td>
           </tr>`;
-      }
+        }
 
-      pages.push(`
+        const detailTitle = dp.pageCount > 1
+          ? `箱 ${i + 1}: ${escapeHtml(c.containerCode)} 详细清单（第 ${dp.pageNo} 页 / 共 ${dp.pageCount} 页）`
+          : `箱 ${i + 1}: ${escapeHtml(c.containerCode)} 详细清单`;
+
+        pages.push(`
         <div class="pdf-page" style="width:794px;background:#fff;color:#3C3A36;padding:32px 44px;box-sizing:border-box;font-family:'Work Sans','PingFang SC','Microsoft YaHei',sans-serif;">
           <div style="border-bottom:2px solid #B8A89A;padding-bottom:10px;margin-bottom:12px;">
-            <h2 style="font-size:17px;margin:0;color:#3C3A36;">箱 ${i + 1}: ${escapeHtml(c.containerCode)} 详细清单</h2>
+            <h2 style="font-size:17px;margin:0;color:#3C3A36;">${detailTitle}</h2>
             <p style="font-size:11px;color:#7A7570;margin:4px 0 0;">
               装载 ${c.placedItems.length} 件 · 体积利用率 ${(c.utilization * 100).toFixed(1)}% ·
               载重利用率 ${((c.weightUtil || 0) * 100).toFixed(1)}% · 总重 ${(c.totalWeight || 0).toFixed(0)} kg
@@ -135,7 +209,8 @@ const PdfExporter = (() => {
             <tbody>${rows}</tbody>
           </table>
         </div>
-      `);
+        `);
+      }
     }
 
     // ═══ 问题报告页 ═══
@@ -253,7 +328,17 @@ const PdfExporter = (() => {
     }
   }
 
-  return { generateReport, setSaveHandler };
+  return {
+    generateReport,
+    setSaveHandler,
+    // P-01 修复：导出纯函数与常量，供单元测试与外部复用（只增不减，不破坏既有 API）
+    renderReportHtml,
+    buildDetailPages,
+    buildSummaryPages,
+    PAGE_ROWS_PER_SHEET,
+    SINGLE_PAGE_MAX_ROWS,
+    SUMMARY_ROWS_PER_PAGE
+  };
 })();
 
 window.PdfExporter = PdfExporter;
