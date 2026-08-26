@@ -17,6 +17,32 @@
   --m-moss:  #7B9A7B;
   --m-stone: #7A7570;
 
+  /* ── Design tokens (P0-A) ── */
+  /* Radius scale */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+  /* Spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  /* Motion */
+  --dur-fast: 150ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* Utilization semantic pair (score cards) */
+  --util-vol: #176B87;      /* 体积利用率 — 青 */
+  --util-wt: #C4A882;       /* 载重利用率 — 陶土金 */
+  --bottleneck: #7A9EBF;    /* 载重瓶颈提示 — 雾蓝（非错误） */
+
   /* Light theme (default) */
   --bg: #EFF3F5;
   --bg-secondary: #E2E9EC;
@@ -57,6 +83,10 @@
   --warning: #D6B896;
   --error: #D98A8A;
   --success: #93B093;
+  /* Utilization pair (dark 调亮适配) */
+  --util-vol: #6FAEC7;
+  --util-wt: #D8BC94;
+  --bottleneck: #9DB8D4;
 }
 
 [data-theme="contrast"] {
@@ -78,6 +108,10 @@
   --warning: #F0C98F;
   --error: #FF8A8A;
   --success: #A3D1A3;
+  /* Utilization pair (contrast 高对比) */
+  --util-vol: #9FD0E8;
+  --util-wt: #EBD3A8;
+  --bottleneck: #B8D2EA;
 }
 
 /* ── 2. Base ── */
@@ -101,6 +135,8 @@ body {
   line-height: 1.6;
   font-size: 14px;
   min-height: 100vh;
+  /* P0-A：数据区数字等宽基线（表格/分数/徽章继承） */
+  font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   transition: background-color 0.55s cubic-bezier(0.4, 0, 0.2, 1),
@@ -141,8 +177,8 @@ body {
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 14%, transparent); }
 .status-divider { height: 14px; width: 1px; background: var(--border-strong); }
 
-.theme-switcher { display: inline-flex; align-items: center; gap: 4px; padding: 3px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; }
-.theme-btn { width: 38px; height: 38px; border-radius: 6px; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; display: grid; place-items: center; transition: color 0.2s ease, background 0.2s ease; }
+.theme-switcher { display: inline-flex; align-items: center; gap: 4px; padding: 3px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.theme-btn { width: 38px; height: 38px; border-radius: var(--radius-sm); border: none; background: transparent; color: var(--text-secondary); cursor: pointer; display: grid; place-items: center; transition: color 0.2s ease, background 0.2s ease; }
 .theme-btn svg { width: 17px; height: 17px; stroke-width: 1.8; }
 .theme-btn:hover { color: var(--text); background: var(--card); }
 .theme-btn.active { background: var(--card); color: var(--accent); box-shadow: var(--shadow-sm); }
@@ -163,7 +199,7 @@ body {
   top: 82px;
   border: 1px solid var(--border);
   background: var(--card);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   box-shadow: var(--shadow-sm);
 }
 .sidebar { min-height: calc(100vh - 128px); padding: 18px 12px; display: flex; flex-direction: column; }
@@ -179,8 +215,8 @@ body {
 .steps__step { min-height: 64px; display: flex; align-items: center; gap: 12px; padding: 10px 8px; position: relative; cursor: pointer; border-left: 3px solid transparent; outline: none; }
 .steps__step::after { display: none; }
 .steps__step:hover { background: var(--card-hover); }
-.steps__step:focus-visible { box-shadow: 0 0 0 3px var(--focus-ring); border-radius: 6px; }
-.steps__number { width: 30px; height: 30px; border-radius: 6px; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--bg-secondary); color: var(--text-secondary); border: 1px solid var(--border); flex-shrink: 0; }
+.steps__step:focus-visible { box-shadow: 0 0 0 3px var(--focus-ring); border-radius: var(--radius-sm); }
+.steps__number { width: 30px; height: 30px; border-radius: var(--radius-sm); display: grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--bg-secondary); color: var(--text-secondary); border: 1px solid var(--border); flex-shrink: 0; }
 .steps__copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .steps__label { font-size: 13px; color: var(--text-secondary); font-weight: 650; }
 .steps__copy small { color: var(--text-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -192,7 +228,7 @@ body {
 /* ── 6. Card Component ── */
 .card {
   background: var(--card);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 22px;
   box-shadow: var(--shadow-sm);
   margin-bottom: 14px;
@@ -210,7 +246,7 @@ body {
   border: 2px dashed var(--border-strong);
   padding: 48px 40px;
   text-align: center;
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
   transition: background 0.3s ease, border-color 0.3s ease, transform 0.3s ease;
   cursor: pointer;
   background: color-mix(in srgb, var(--bg-secondary) 40%, transparent);
@@ -267,7 +303,7 @@ body {
 
 /* ── 8. Table Styles ── */
 .table-wrapper {
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
   border: 1px solid var(--border);
 }
@@ -314,7 +350,7 @@ input[type='number'],
 input[type='file'],
 textarea {
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 10px 14px;
   font-size: 14px;
   font-family: inherit;
@@ -358,7 +394,7 @@ select option {
   justify-content: center;
   gap: 8px;
   padding: 11px 24px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   font-family: inherit;
   font-size: 14px;
   font-weight: 500;
@@ -475,7 +511,7 @@ select option {
 .progress {
   height: 6px;
   background: var(--bg-secondary);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   width: 100%;
   border: 1px solid var(--border);
@@ -484,7 +520,7 @@ select option {
 .progress__bar {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--m-sage));
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   width: 0%;
 }
@@ -510,8 +546,8 @@ select option {
 .context-panel.context-panel--active { display: block; animation: fadeIn 0.25s ease; }
 .context-panel h2 { margin: 18px 0 4px; color: var(--text); font-size: 15px; font-weight: 700; }
 .context-panel__hint { margin: 0 0 18px; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
-.context-empty, .context-note { border: 1px dashed var(--border-strong); background: var(--bg-secondary); color: var(--text-secondary); padding: 14px; border-radius: 6px; font-size: 12px; }
-.metric-grid { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.context-empty, .context-note { border: 1px dashed var(--border-strong); background: var(--bg-secondary); color: var(--text-secondary); padding: 14px; border-radius: var(--radius-sm); font-size: 12px; }
+.metric-grid { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 .metric-grid > div { min-width: 0; padding: 12px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .metric-grid > div:nth-child(2n) { border-right: 0; }
 .metric-grid > div:nth-last-child(-n + 2) { border-bottom: 0; }
@@ -532,7 +568,7 @@ select option {
 .result-summary__card {
   min-width: 0;
   background: var(--bg-secondary);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 15px;
   box-shadow: none;
   text-align: left;
@@ -558,35 +594,117 @@ select option {
   padding: 8px 12px;
   background: color-mix(in srgb, var(--warning) 12%, var(--card));
   border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 11px;
   color: var(--text-secondary);
   line-height: 1.55;
 }
 
-/* Container tab buttons (rendered by app.js) */
-.container-tabs__row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+/* Container tab buttons (rendered by app.js) — P0-B 迷你分数卡 */
+.container-tabs__row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: var(--space-3); }
 .container-tab-btn {
-  min-height: 36px;
-  padding: 6px 16px;
+  min-height: 44px;
+  padding: 6px 12px;
   font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   background: var(--card);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  text-align: left;
+  transition: transform var(--dur-base) var(--ease-spring), box-shadow var(--dur-base) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
 }
-.container-tab-btn:hover { border-color: var(--accent); color: var(--text); }
+.container-tab-btn:hover { border-color: var(--accent); color: var(--text); transform: translateY(-1px); }
 .container-tab-btn--active,
-.container-tab-btn--active:hover { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+.container-tab-btn--active:hover {
+  background: var(--card);
+  color: var(--text);
+  border-color: var(--accent);
+  border-width: 2px;
+  padding: 5px 11px; /* 补偿 border 加粗，防跳动 */
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+}
+.ctab__no { font-weight: 700; font-size: 12px; letter-spacing: .02em; white-space: nowrap; }
+.ctab__bars { display: flex; flex-direction: column; gap: 3px; }
+.ctab__bar {
+  height: 4px; width: 96px; max-width: 100%;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-pill);
+  overflow: hidden; display: block;
+}
+.ctab__bar i { display: block; height: 100%; background: var(--util-vol); border-radius: inherit; transition: width var(--dur-slow) var(--ease-out); }
+.ctab__bar--wt i { background: var(--util-wt); }
+.ctab__meta { font-size: 10.5px; color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* P0-B 复合摘要卡（箱详情头部）*/
+.score-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2) var(--space-5);
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  animation: fadeInUp var(--dur-slow) var(--ease-out) both;
+}
+.score-card__main { display: flex; flex-direction: column; align-items: flex-start; }
+.score-card__big { line-height: 1; color: var(--util-vol); font-family: 'Fraunces', serif; }
+.score-card__num { font-size: 42px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.score-card__unit { font-size: 20px; font-weight: 500; margin-left: 2px; opacity: .8; }
+.score-card__label { margin-top: 4px; font-size: 11px; color: var(--text-muted); letter-spacing: .06em; }
+.score-card__sub { margin-left: 6px; opacity: .75; }
+.score-card__bars { display: flex; flex-direction: column; gap: var(--space-2); min-width: 200px; }
+.score-card__barrow { display: grid; grid-template-columns: 32px 1fr 52px; align-items: center; gap: var(--space-2); }
+.score-card__barlabel { font-size: 11px; color: var(--text-secondary); }
+.score-card__track { height: 8px; background: var(--bg-secondary); border-radius: var(--radius-pill); overflow: hidden; display: block; }
+.score-card__track i { display: block; height: 100%; background: var(--util-vol); border-radius: inherit; transition: width var(--dur-slow) var(--ease-out); }
+.score-card__track--wt i { background: var(--util-wt); }
+.score-card__barval { font-size: 11px; color: var(--text-secondary); text-align: right; font-variant-numeric: tabular-nums; }
+.score-card__facts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); align-items: center; font-size: 12px; color: var(--text-secondary); }
+.score-card__fact strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.score-card__badge { padding: 2px 10px; border-radius: var(--radius-pill); font-size: 11px; font-weight: 600; border: 1px solid transparent; }
+.score-card__badge--ok      { color: var(--success);   background: color-mix(in srgb, var(--success) 10%, transparent);  border-color: color-mix(in srgb, var(--success) 30%, transparent); }
+.score-card__badge--error   { color: var(--error);     background: color-mix(in srgb, var(--error) 10%, transparent);    border-color: color-mix(in srgb, var(--error) 30%, transparent); }
+.score-card__badge--warn    { color: var(--warning);   background: color-mix(in srgb, var(--warning) 12%, transparent);  border-color: color-mix(in srgb, var(--warning) 32%, transparent); }
+.score-card__badge--bottleneck { color: var(--bottleneck); background: color-mix(in srgb, var(--bottleneck) 12%, transparent); border-color: color-mix(in srgb, var(--bottleneck) 35%, transparent); }
+.score-card__expand { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent); border-radius: var(--radius-sm); padding: 0 6px; font-size: 11px; }
+.score-card__reason { color: var(--text-muted); font-size: 11px; }
+
+/* P0-B SKU 胶囊 */
+.sku-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--space-2); }
+.sku-pill {
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.sku-pill b { color: var(--text); font-weight: 600; margin-left: 4px; font-variant-numeric: tabular-nums; }
+
+/* P0-B 警告面板三档分组 */
+.wp__empty { color: var(--success); font-size: 13px; }
+.wp__group { margin-bottom: var(--space-3); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); border: 1px solid transparent; }
+.wp__group--error      { border-color: color-mix(in srgb, var(--error) 25%, transparent);     background: color-mix(in srgb, var(--error) 5%, transparent); }
+.wp__group--bottleneck { border-color: color-mix(in srgb, var(--bottleneck) 30%, transparent); background: color-mix(in srgb, var(--bottleneck) 6%, transparent); }
+.wp__group--warn       { border-color: color-mix(in srgb, var(--warning) 28%, transparent);   background: color-mix(in srgb, var(--warning) 5%, transparent); }
+.wp__title { font-weight: 700; font-size: 12px; margin-bottom: 4px; color: var(--text); }
+.wp__item { font-size: 12px; color: var(--text-secondary); padding: 2px 0; line-height: 1.55; }
+.wp__item--bottleneck { color: color-mix(in srgb, var(--bottleneck) 80%, var(--text)); }
 
 /* ── 13. 3D Viewer Container ── */
 .viewer-3d {
   position: relative;
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--bg-secondary);
   height: 520px;
@@ -607,7 +725,7 @@ select option {
 }
 
 .container-tabs__btn {
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 8px 18px;
   font-size: 13px;
   font-weight: 500;
@@ -641,7 +759,7 @@ select option {
 
 /* ── 15. Alerts ── */
 .alert {
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   padding: 14px 18px;
   margin-bottom: 10px;
   font-size: 13px;
@@ -720,7 +838,7 @@ input[type='checkbox'] {
   width: 18px;
   height: 18px;
   border: 1.5px solid var(--border-strong);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--card);
   cursor: pointer;
   position: relative;
@@ -816,7 +934,7 @@ input[type='checkbox']:hover {
 
   .drop-zone { padding: 32px 24px; }
 
-  .viewer-3d { height: 360px; border-radius: 8px; }
+  .viewer-3d { height: 360px; border-radius: var(--radius-sm); }
 
   .container-tab-btn { min-height: 44px; padding: 6px 12px; font-size: 12px; }
 
@@ -852,7 +970,7 @@ input[type='checkbox']:hover {
   margin-top: 24px;
   padding: 24px;
   background: var(--bg-secondary);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
 }
 
@@ -904,7 +1022,7 @@ input[type='checkbox']:hover {
 .manual-entry__field input[type="number"] {
   padding: 10px 12px;
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--card);
   color: var(--text);
   font-size: 14px;
@@ -937,7 +1055,7 @@ input[type='checkbox']:hover {
   justify-content: space-between;
   padding: 10px 14px;
   background: var(--card);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   font-size: 13px;
   color: var(--text);
@@ -945,7 +1063,7 @@ input[type='checkbox']:hover {
 
 .manual-entry__item button {
   padding: 4px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--danger);
   background: transparent;
   color: var(--danger);

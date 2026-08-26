@@ -263,6 +263,13 @@
    * Uses setTimeout chains to yield to the browser between ticks.
    * Returns a cancel handle so callers can void the pending callback.
    */
+  // P1-D：等待期阶段文案轮播（解析→预演→计算→自检），给 indeterminate 进度条注入生命感
+  const CALC_PHASES = [
+    '📋 解析货物数据…',
+    '🔮 推荐箱型预演中…',
+    '⚙️ EMS 装箱计算…',
+    '🔍 承重与边界自检…'
+  ];
   function simulateProgress(_durationMs, onDone) {
     // Indeterminate 脉冲进度条，不显示虚假百分比
     const bar = $('progress-bar');
@@ -271,14 +278,21 @@
       bar.classList.add('progress--indeterminate');
     }
     const status = $('progress-text');
+    let phaseTimer = null;
     if (status) {
       status.style.display = 'block';
-      status.textContent = '算法计算中，大货量可能需较长时间…';
+      let phaseIdx = 0;
+      status.textContent = CALC_PHASES[0];
+      phaseTimer = setInterval(() => {
+        phaseIdx = (phaseIdx + 1) % CALC_PHASES.length;
+        status.textContent = CALC_PHASES[phaseIdx];
+      }, 900);
     }
 
     // 延迟启动真实计算，确保 UI 渲染；返回可取消句柄供作废
     let handle = null;
     const timeoutId = setTimeout(() => {
+      if (phaseTimer) clearInterval(phaseTimer);
       // callback fired, handle is stale - drop the reference so future invalidation is clean
       if (activeCalcHandle === handle) activeCalcHandle = null;
       if (onDone) onDone();
@@ -286,6 +300,7 @@
 
     handle = {
       cancel() {
+        if (phaseTimer) clearInterval(phaseTimer);
         clearTimeout(timeoutId);
       }
     };
@@ -1839,6 +1854,17 @@
     // Warnings / errors panel
     renderWarningsPanel(result);
 
+    // P1-D：结果区块 stagger 入场（摘要→tabs→警告，60ms 间隔）
+    const step4 = $('step-4');
+    if (step4) {
+      const blocks = step4.querySelectorAll(':scope > .result-summary, :scope > .mt-4, :scope > .result-layout');
+      blocks.forEach((b, i) => {
+        b.style.animation = 'none';
+        void b.offsetWidth; // reflow 重触发动画
+        b.style.animation = `fadeInUp var(--dur-slow) var(--ease-out) ${i * 60}ms both`;
+      });
+    }
+
     // 3D Viewer
     renderThreeViewer(result);
 
@@ -1898,22 +1924,27 @@
     const el = $('container-tabs');
     if (!el) return;
 
-    let html = '<div class="container-tabs__row">';
+    // P0-B：tab 升级为迷你分数卡 —— 箱号 + 双色利用率条（体积/载重）+ 件数徽章
+    let html = '<div class="container-tabs__row" role="tablist">';
     for (let i = 0; i < result.containers.length; i++) {
       const c = result.containers[i];
       const active = i === 0 ? ' container-tab-btn--active' : '';
       const isFR = c.containerCode && c.containerCode.includes('FR');
-      const effLabel = isFR && c.spaceEfficiency != null
-        ? `${(c.spaceEfficiency * 100).toFixed(1)}%`
-        : (c.utilization ? `${(c.utilization * 100).toFixed(1)}%` : 'N/A');
-      html += `<button type="button" class="container-tab-btn${active}" data-index="${i}">
-        箱 ${i + 1} | ${effLabel}
+      const volPct = Math.min(100, (isFR && c.spaceEfficiency != null ? c.spaceEfficiency : (c.utilization || 0)) * 100);
+      const wtPct = Math.min(100, (c.weightUtil || 0) * 100);
+      html += `<button type="button" role="tab" aria-selected="${i === 0}" class="container-tab-btn${active}" data-index="${i}">
+        <span class="ctab__no">箱 ${i + 1}</span>
+        <span class="ctab__bars">
+          <span class="ctab__bar"><i style="width:${volPct.toFixed(1)}%"></i></span>
+          <span class="ctab__bar ctab__bar--wt"><i style="width:${wtPct.toFixed(1)}%"></i></span>
+        </span>
+        <span class="ctab__meta">${volPct.toFixed(0)}% · ${c.placedItems.length}件</span>
       </button>`;
     }
     html += '</div>';
 
     // Container detail panel
-    html += '<div id="container-detail" style="font-size:13px;color:#555;"></div>';
+    html += '<div id="container-detail"></div>';
 
     el.innerHTML = html;
 
@@ -1960,22 +1991,51 @@
     }
 
     const isFR = c.containerCode && c.containerCode.includes('FR');
-    const utilText = isFR && c.spaceEfficiency != null
-      ? `空间效率 ${(c.spaceEfficiency * 100).toFixed(1)}%（标称利用率 ${(c.utilization * 100).toFixed(1)}%）`
-      : `体积利用率 ${(c.utilization * 100).toFixed(1)}%`;
+    const volPct = Math.min(100, (isFR && c.spaceEfficiency != null ? c.spaceEfficiency : (c.utilization || 0)) * 100);
+    const wtPct = Math.min(100, (c.weightUtil || 0) * 100);
+
+    // P0-B：状态判定 —— weightBottleneck（载重瓶颈）非错误，用雾蓝中性提示
+    let statusBadge = '';
+    const hasBottleneck = check && check.warnings.some(w => w.type === 'weightBottleneck');
+    if (errCount > 0) {
+      statusBadge = '<span class="score-card__badge score-card__badge--error">🔴 ' + errCount + ' 错误</span>';
+    } else if (hasBottleneck) {
+      statusBadge = '<span class="score-card__badge score-card__badge--bottleneck">⚖️ 载重瓶颈</span>';
+    } else if (warnCount > 0) {
+      statusBadge = '<span class="score-card__badge score-card__badge--warn">⚠️ ' + warnCount + ' 提示</span>';
+    } else {
+      statusBadge = '<span class="score-card__badge score-card__badge--ok">✅ 无异常</span>';
+    }
+
+    const utilMainLabel = isFR && c.spaceEfficiency != null ? '空间效率' : '体积利用率';
 
     detailEl.innerHTML = `
-      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
-        <span><strong>箱型：</strong>${c.containerCode}${c.isExpand ? ' <span style="color:#8B7516;background:#FFF9E6;border:1px solid #E8D5A0;border-radius:6px;padding:1px 6px;font-size:11px;">扩容补装</span>' : ''}${c.plannerReason ? `<span style="color:#7A706B;font-size:11px;">${escapeHtml(c.plannerReason)}</span>` : ''}</span>
-        <span><strong>装载件数：</strong>${c.placedItems.length}</span>
-        <span><strong>${utilText}</strong></span>
-        <span><strong>载重利用率：</strong>${(c.weightUtil * 100).toFixed(1)}%</span>
-        <span><strong>总重：</strong>${c.totalWeight.toFixed(0)} kg</span>
-        ${errCount > 0 ? `<span style="color:#C4827B;">🔴 ${errCount} 错误</span>` : ''}
-        ${warnCount > 0 ? `<span style="color:#D4A574;">⚠️ ${warnCount} 警告</span>` : ''}
+      <div class="score-card">
+        <div class="score-card__main">
+          <div class="score-card__big"><span class="score-card__num">${volPct.toFixed(1)}</span><span class="score-card__unit">%</span></div>
+          <div class="score-card__label">${utilMainLabel}${isFR && c.spaceEfficiency != null ? `<span class="score-card__sub">标称 ${(c.utilization * 100).toFixed(1)}%</span>` : ''}</div>
+        </div>
+        <div class="score-card__bars">
+          <div class="score-card__barrow">
+            <span class="score-card__barlabel">体积</span>
+            <span class="score-card__track"><i style="width:${volPct.toFixed(1)}%"></i></span>
+            <span class="score-card__barval">${volPct.toFixed(1)}%</span>
+          </div>
+          <div class="score-card__barrow">
+            <span class="score-card__barlabel">载重</span>
+            <span class="score-card__track score-card__track--wt"><i style="width:${wtPct.toFixed(1)}%"></i></span>
+            <span class="score-card__barval">${wtPct.toFixed(1)}%</span>
+          </div>
+        </div>
+        <div class="score-card__facts">
+          ${statusBadge}
+          <span class="score-card__fact">箱型 <strong>${c.containerCode}</strong>${c.isExpand ? ' <span class="score-card__expand">扩容补装</span>' : ''}${c.plannerReason ? ` <span class="score-card__reason">${escapeHtml(c.plannerReason)}</span>` : ''}</span>
+          <span class="score-card__fact">装载 <strong>${c.placedItems.length}</strong> 件</span>
+          <span class="score-card__fact">总重 <strong>${c.totalWeight.toFixed(0)}</strong> kg</span>
+        </div>
       </div>
-      <div style="margin-top:6px;font-size:12px;color:#999;">
-        SKU分布：${Object.entries(modelCounts).map(([m, n]) => `${escapeHtml(m)}×${n}`).join(', ')}
+      <div class="sku-pills">
+        ${Object.entries(modelCounts).map(([m, n]) => `<span class="sku-pill">${escapeHtml(m)}<b>×${n}</b></span>`).join('')}
       </div>
     `;
   }
@@ -1984,7 +2044,9 @@
     const el = $('warnings-panel');
     if (!el) return;
 
+    // P0-B：三档分组 —— errors（红）/ bottleneck（雾蓝，载重瓶颈非错误）/ warnings（橙）
     const allErrors = [];
+    const allBottlenecks = [];
     const allWarnings = [];
 
     if (result.checks) {
@@ -1999,7 +2061,11 @@
           }
         }
         for (const warn of ch.warnings) {
-          allWarnings.push(`[箱${i + 1}] ${warn.message}`);
+          if (warn.type === 'weightBottleneck') {
+            allBottlenecks.push(`[箱${i + 1}] ${warn.message}`);
+          } else {
+            allWarnings.push(`[箱${i + 1}] ${warn.message}`);
+          }
         }
       }
     }
@@ -2039,29 +2105,26 @@
       }
     }
 
-    if (allErrors.length === 0 && allWarnings.length === 0) {
-      el.innerHTML = '<div style="color:#8B9E8B;font-size:13px;">✅ 无异常，所有货物完美装箱 ✨</div>';
+    if (allErrors.length === 0 && allBottlenecks.length === 0 && allWarnings.length === 0) {
+      el.innerHTML = '<div class="wp__empty">✅ 无异常，所有货物完美装箱 ✨</div>';
       return;
     }
 
+    // P0-B：分色分组渲染
     let html = '';
-    if (allErrors.length > 0) {
-      html += '<div style="margin-bottom:8px;">';
-      html += '<div style="font-weight:600;color:#C4827B;margin-bottom:4px;">🔴 错误</div>';
-      for (const e of allErrors) {
-        html += `<div style="font-size:12px;color:#943126;padding:2px 0;">${escapeHtml(e)}</div>`;
+    const group = (title, cls, items, itemCls) => {
+      if (items.length === 0) return '';
+      let g = `<div class="wp__group wp__group--${cls}">`;
+      g += `<div class="wp__title">${title}</div>`;
+      for (const it of items) {
+        g += `<div class="wp__item ${itemCls || ''}">${escapeHtml(it)}</div>`;
       }
-      html += '</div>';
-    }
+      return g + '</div>';
+    };
 
-    if (allWarnings.length > 0) {
-      html += '<div>';
-      html += '<div style="font-weight:600;color:#D4A574;margin-bottom:4px;">⚠️ 警告</div>';
-      for (const w of allWarnings) {
-        html += `<div style="font-size:12px;color:#8B7516;padding:2px 0;">${escapeHtml(w)}</div>`;
-      }
-      html += '</div>';
-    }
+    html += group(`🔴 错误 (${allErrors.length})`, 'error', allErrors);
+    html += group(`⚖️ 载重瓶颈提示 (${allBottlenecks.length})`, 'bottleneck', allBottlenecks, 'wp__item--bottleneck');
+    html += group(`⚠️ 提示 (${allWarnings.length})`, 'warn', allWarnings);
 
     el.innerHTML = html;
   }
