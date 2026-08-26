@@ -949,10 +949,12 @@ const PackingEngine = (() => {
     const containerVol = container.L * container.W * container.H;
     // 修复 D-03：utilization 不再用 Math.min(1, …) 截断。
     // FR 超限装载（packedVolume > containerVol）保留真实比值（>1），
-    // 并附加 overVolume 标记供 UI 警示；weightedAvgUtilization 直接使用
-    // 真实箱容 containerVolume，避免截断值反推容量导致跨箱平均失真。
+    // 并附加 overCapacity 标记供 UI 警示（任务卡字段名；overVolume 为兼容保留）；
+    // weightedAvgUtilization 直接使用真实箱容 containerVolume，
+    // 避免截断值反推容量导致跨箱平均失真。
     const rawUtil = containerVol > 0 ? packedVolume / containerVol : 0;
     const utilization = rawUtil;
+    const overCapacity = packedVolume > containerVol;
     const overVolume = rawUtil > 1 + CONSTANTS.EPS;
     const effectiveVolume = effDims.maxL * effDims.maxW * effDims.maxH;
     const spaceEfficiency = effectiveVolume > 0 ? packedVolume / effectiveVolume : 0;
@@ -968,6 +970,7 @@ const PackingEngine = (() => {
       totalVolume: packedVolume,
       containerVolume: containerVol,
       overVolume,
+      overCapacity,
       containerCode: container.code || 'UNKNOWN'
     };
   }
@@ -1472,6 +1475,7 @@ const PackingEngine = (() => {
     const errors = [];
     const warnings = [];
     const { placedItems, utilization, totalWeight } = result;
+    const weightUtil = container.payload > 0 ? totalWeight / container.payload : 0;
 
     // 1. 重叠检测 O(n²) AABB
     const overlaps = detectOverlaps(placedItems);
@@ -1495,11 +1499,20 @@ const PackingEngine = (() => {
       errors.push({ type: 'outOfBounds', message: '货物超出容器边界', details: outOfBounds.slice(0, 5) });
     }
 
-    // 3. 严重低利用率
-    // FR 箱型因可超限，用 spaceEfficiency 评估装载紧凑度更合理
+    // 3. 低利用率
+    // FR 箱型因可超限，用 spaceEfficiency 评估装载紧凑度更合理。
+    // 修复（用户案例：700件×600kg 重货，载重打满后体积利用率仅12.9%）：
+    // 载重利用率接近上限时，体积低是物理必然（重货密度 > 箱容密度），
+    // 不应再报"空间利用率低"警告——改为提示载重已饱和、瓶颈在重量。
     const isFR = container.type === 'flatRack';
     const efficiency = isFR ? (result.spaceEfficiency || utilization) : utilization;
-    if (efficiency < 0.2 && placedItems.length <= 2) {
+    const weightSaturated = weightUtil >= 0.9; // 载重≥90% 视为重量瓶颈
+    if (weightSaturated && efficiency < 0.5) {
+      warnings.push({
+        type: 'weightBottleneck',
+        message: `载重已达上限（${(weightUtil * 100).toFixed(1)}%），体积利用率${(efficiency * 100).toFixed(1)}%属重货正常水平——箱数受重量限制而非容积`
+      });
+    } else if (efficiency < 0.2 && placedItems.length <= 2) {
       warnings.push({
         type: 'lowUtilizationCritical',
         message: `空间利用率仅${(efficiency * 100).toFixed(1)}%，且仅装入${placedItems.length}件货物`,
@@ -1734,6 +1747,28 @@ const PackingEngine = (() => {
   // 重算（一次，换排序策略）
   // ═══════════════════════════════════════════
 
+  /**
+   * D-02 重算采纳判定纯函数。
+   * 对比新旧结果的总装载件数 + 空间利用率：
+   * 新结果利用率显著更优 → 采纳；利用率持平且已装件数不减少 → 采纳；
+   * 其余情况（新结果不优于旧结果）→ 保留原结果。
+   * 独立成纯函数，便于单测直接构造新旧结果断言采纳/保留方向。
+   * @param {object} originalResult - 首次结果（含 avgUtilization / totalPlaced）
+   * @param {object} newResult - 换排序策略后的重算结果
+   * @param {number} [eps] - 利用率比较容差，默认 CONSTANTS.EPS
+   * @returns {boolean} true=采纳新结果，false=保留原结果
+   */
+  function shouldAdoptRecalc(originalResult, newResult, eps) {
+    const EPS = eps == null ? CONSTANTS.EPS : eps;
+    const newUtil = Number.isFinite(newResult.avgUtilization) ? newResult.avgUtilization : 0;
+    const oldUtil = Number.isFinite(originalResult.avgUtilization) ? originalResult.avgUtilization : 0;
+    const newPlaced = Number.isFinite(newResult.totalPlaced) ? newResult.totalPlaced : 0;
+    const oldPlaced = Number.isFinite(originalResult.totalPlaced) ? originalResult.totalPlaced : 0;
+    const utilBetter = newUtil > oldUtil + EPS;
+    const utilTie = Math.abs(newUtil - oldUtil) <= EPS;
+    return utilBetter || (utilTie && newPlaced >= oldPlaced);
+  }
+
   function recalibrate(allItems, container, originalResult, options) {
     const newOptions = { ...options, sortStrategy: 'weight-desc', optimize: false };
     const newResult = multiContainerPack(allItems, container, newOptions);
@@ -1749,17 +1784,9 @@ const PackingEngine = (() => {
     }
 
     // 修复 D-02：重算结果不再无条件替换。
-    // 比较新旧结果——利用率为首要指标，其次已装件数；
-    // 仅当新结果不劣于旧结果时才替换，更差时保留原结果并标注 recalcSkipped。
-    const EPS = CONSTANTS.EPS;
-    const newUtil = Number.isFinite(newResult.avgUtilization) ? newResult.avgUtilization : 0;
-    const oldUtil = Number.isFinite(originalResult.avgUtilization) ? originalResult.avgUtilization : 0;
-    const newPlaced = Number.isFinite(newResult.totalPlaced) ? newResult.totalPlaced : 0;
-    const oldPlaced = Number.isFinite(originalResult.totalPlaced) ? originalResult.totalPlaced : 0;
-    const utilBetter = newUtil > oldUtil + EPS;
-    const utilTie = Math.abs(newUtil - oldUtil) <= EPS;
-
-    if (utilBetter || (utilTie && newPlaced >= oldPlaced)) {
+    // 判定逻辑收敛到纯函数 shouldAdoptRecalc（对比总装载件数 + 空间利用率），
+    // 仅当新结果不差于旧结果时才替换；更差时保留原结果并标注 recalcSkipped。
+    if (shouldAdoptRecalc(originalResult, newResult, CONSTANTS.EPS)) {
       return { ...newResult, recalculated: true, recalcSkipped: false };
     }
     return { ...originalResult, recalculated: false, recalcSkipped: true };
@@ -2172,8 +2199,8 @@ const PackingEngine = (() => {
       // 修复 C-NEW-3：容器规格对象入口校验。
       // L/W/H/payload 任一为 NaN/≤0/非有限数时，重量/体积约束会静默失效
       // （如 payload:NaN 使重量比较恒为 false，超重货全装且 hasErrors=false）。
-      // 校验失败时：若对象带可解析 code 则回退 CONTAINER_DB；否则抛明确错误，
-      // 禁止静默放行。containerCode 字符串路径不受影响。
+      // 校验失败一律抛明确业务错误（与 validateCalculationInput 风格一致），
+      // 不做静默回退——用户传入的非法规格必须显式暴露。字符串 code 路径不受影响。
       const specChecks = [
         { field: 'L', value: Number(containerSpec.L) },
         { field: 'W', value: Number(containerSpec.W) },
@@ -2182,12 +2209,7 @@ const PackingEngine = (() => {
       ];
       const invalidFields = specChecks.filter(s => !Number.isFinite(s.value) || s.value <= 0);
       if (invalidFields.length > 0) {
-        const code = containerSpec.code;
-        if (typeof code === 'string' && CONTAINER_DB[code]) {
-          containerSpec = CONTAINER_DB[code];
-        } else {
-          throw new Error(`箱型规格无效：${invalidFields.map(s => `${s.field}=${containerSpec[s.field]}`).join(', ')} 必须为正数`);
-        }
+        throw new Error(`箱型规格无效：${invalidFields.map(s => `${s.field}=${containerSpec[s.field]}`).join(', ')} 必须为正数`);
       }
     } else {
       throw new Error('无效的箱型规格：未选择或数据损坏，请返回上一步重新确认');
@@ -2322,8 +2344,9 @@ const PackingEngine = (() => {
     expandItems,
     getTotalQuantity,
     // 暴露内部函数供测试
-    _internal: { createSpace, cutSpace, mergeSpaces, dblScore, emsPlace, layerPack, detectOverlaps, sortItems, groupByModel, orderGroups, calcSupportRatio, hasCornerSupport, baseOverlapsContainerFloor, checkWeightBearing, weightedAvgUtilization }
+    _internal: { createSpace, cutSpace, mergeSpaces, dblScore, emsPlace, layerPack, detectOverlaps, sortItems, groupByModel, orderGroups, calcSupportRatio, hasCornerSupport, baseOverlapsContainerFloor, checkWeightBearing, weightedAvgUtilization, shouldAdoptRecalc }
   };
 })();
 
-window.PackingEngine = PackingEngine;
+  const packingEngineGlobal = typeof window !== 'undefined' ? window : self;
+  packingEngineGlobal.PackingEngine = PackingEngine;

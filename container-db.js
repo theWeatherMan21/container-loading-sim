@@ -77,11 +77,12 @@ const CONTAINER_DB = {
     payload: 27500,
     volume: 5.612 * 2.227 * 2.219,
     type: 'flatRack',
-    // C-02 修复(2026-08-06)：FR 超限以 FR_REALITY_LIMITS 为唯一口径（超长0.5m前后合计/超宽2.0m左右合计/超高1.0m）。
-    // 超宽2.0m与超高1.0m为业务设定值，道路运输实际限值需业务确认（注释留存）。
-    allowOverHeight: true, maxOverHeight: 1.0,
-    allowOverWidth: true, maxOverWidth: 2.0,
-    allowOverLength: true, maxOverLength: 0.5
+    // C-02 修复(2026-08-06)：FR 超限仅以 FR_REALITY_LIMITS 为单一事实来源（超长0.5m前后合计/超宽2.0m左右合计/超高1.0m）。
+    // 此处不再声明 maxOverWidth/maxOverHeight/maxOverLength（此前与 FR_REALITY_LIMITS 双口径并存，改任一处不生效）。
+    // 如需调整 FR 超限值：只改 FR_REALITY_LIMITS。allowOver* 保留为语义标记（flatRack 允许超限）。
+    allowOverHeight: true,
+    allowOverWidth: true,
+    allowOverLength: true
   },
   '40FR': {
     code: '40FR', name: '40尺框架柜', nameCN: '40尺框架',
@@ -93,11 +94,12 @@ const CONTAINER_DB = {
     payload: 39600,
     volume: 11.652 * 2.224 * 2.248,
     type: 'flatRack',
-    // C-02 修复(2026-08-06)：FR 超限以 FR_REALITY_LIMITS 为唯一口径（超长0.5m前后合计/超宽2.0m左右合计/超高1.0m）。
-    // 超宽2.0m与超高1.0m为业务设定值，道路运输实际限值需业务确认（注释留存）。
-    allowOverHeight: true, maxOverHeight: 1.0,
-    allowOverWidth: true, maxOverWidth: 2.0,
-    allowOverLength: true, maxOverLength: 0.5
+    // C-02 修复(2026-08-06)：FR 超限仅以 FR_REALITY_LIMITS 为单一事实来源（超长0.5m前后合计/超宽2.0m左右合计/超高1.0m）。
+    // 此处不再声明 maxOverWidth/maxOverHeight/maxOverLength（此前与 FR_REALITY_LIMITS 双口径并存，改任一处不生效）。
+    // 如需调整 FR 超限值：只改 FR_REALITY_LIMITS。allowOver* 保留为语义标记（flatRack 允许超限）。
+    allowOverHeight: true,
+    allowOverWidth: true,
+    allowOverLength: true
   }
 };
 
@@ -105,17 +107,20 @@ const CONTAINER_DB = {
  * 箱型说明（尺寸/载重以 Hapag-Lloyd Container Specification 为准）：
  * - 标准柜 (standard)：20GP/40GP/40HQ/45HQ — 有门约束，不允许超限
  * - 开顶柜 (openTop)：20OT/40OT — 门高=∞（吊装），门宽约束有效，允许超高0.5m（40OT 为 9'6" 高柜规格）
- * - 框架柜 (flatRack)：20FR/40FR — 无门无侧壁；FR 超限以 FR_REALITY_LIMITS 为唯一口径：
+ * - 框架柜 (flatRack)：20FR/40FR — 无门无侧壁；FR 超限仅由 FR_REALITY_LIMITS 定义（C-02，单一事实来源）：
  *   超长0.5m（前后合计）/超宽2.0m（左右合计）/超高1.0m。超宽2.0m与超高1.0m为业务设定值，
- *   道路运输实际限值需业务确认；箱型声明字段数值与 FR_REALITY_LIMITS 保持一致（C-02 修复，避免双口径）。
+ *   道路运输实际限值需业务确认；箱型定义不再重复声明超限字段，调整只改 FR_REALITY_LIMITS。
  */
 
 const CONTAINER_LIST = Object.values(CONTAINER_DB);
 
 /**
- * FR 箱型现实超限上限（经验值）
+ * FR 箱型现实超限上限（经验值）—— FR 超限值的单一事实来源（C-02：箱型定义不再重复声明，改这里即全局生效）
  * 框架柜虽无顶无侧壁，但超宽/超高/超长仍受道路、船舱、吊具、绑扎限制。
  * 该上限表示：货物在框架柜底板上允许占用的最大包络尺寸。
+ * 取值依据：超长0.5m 为集装箱前后端外延允许范围（20'/40' 通用经验值）；
+ * 超宽2.0m 与超高1.0m 为业务设定值，道路运输实际限值需业务确认。
+ * 如需调整：改此处即可（getEffectiveMaxDims 的 flatRack 分支直接读取）。
  */
 const FR_REALITY_LIMITS = {
   maxOverLengthTotal: 0.5,   // 前后合计最多超出 0.5m
@@ -132,21 +137,13 @@ const FR_REALITY_LIMITS = {
 function getEffectiveMaxDims(container, tolerance = 0.05) {
   const t = tolerance;
 
-  // C-02 修复(2026-08-06)：FR 箱型优先读箱型声明字段（与 FR_REALITY_LIMITS 同步的口径），
-  // 声明缺失时回退 FR_REALITY_LIMITS（唯一权威默认值）。
-  // 超长0.5m（前后合计）/超宽2.0m（左右合计）/超高1.0m 为业务设定值；
-  // 道路运输实际限值需业务确认（注释留存）。
+  // C-02 修复(2026-08-06)：FR 箱型直接以 FR_REALITY_LIMITS 为唯一口径（不再读箱型声明字段，
+  // 此前声明字段与 FR_REALITY_LIMITS 双口径并存，改任一处不生效；如需调整超限值只改 FR_REALITY_LIMITS）。
   if (container.type === 'flatRack') {
-    const overL = (typeof container.maxOverLength === 'number')
-      ? container.maxOverLength : FR_REALITY_LIMITS.maxOverLengthTotal;
-    const overW = (typeof container.maxOverWidth === 'number')
-      ? container.maxOverWidth : FR_REALITY_LIMITS.maxOverWidthTotal;
-    const overH = (typeof container.maxOverHeight === 'number')
-      ? container.maxOverHeight : FR_REALITY_LIMITS.maxOverHeightTotal;
     return {
-      maxL: container.L + overL,
-      maxW: container.W + overW,
-      maxH: container.H + overH
+      maxL: container.L + FR_REALITY_LIMITS.maxOverLengthTotal,
+      maxW: container.W + FR_REALITY_LIMITS.maxOverWidthTotal,
+      maxH: container.H + FR_REALITY_LIMITS.maxOverHeightTotal
     };
   }
 
@@ -180,10 +177,12 @@ function checkSizeConstraints(item, container, tolerance = 0.05) {
   const reasons = [];
   const eff = getEffectiveMaxDims(container, tolerance);
 
-  // C-04 修复(2026-08-06)：与 checkDoorConstraint/hasValidOrientationForContainer 统一走 getOrientations ——
-  // orientationFixed=true 时仅检查两个水平旋转朝向（{l,w,h} 与 {w,l,h}），不检查倒置方向；
-  // false/未定义时检查全部 6 方向（含去重），保证 validateItem 调用链上尺寸与门约束使用同一朝向集合。
-  const orientations = getOrientations(item);
+  // C-04 修复(2026-08-06)：与 checkDoorConstraint 的 orientationFixed 分支口径一致 ——
+  // orientationFixed=true（禁倒置）时仅检查两个水平旋转朝向 {l,w,h} 与 {w,l,h}，不检查倒置方向；
+  // false/未定义时走 getOrientations 全部 6 方向（含去重），保证 validateItem 调用链上尺寸与门约束使用同一朝向集合。
+  const orientations = item.orientationFixed
+    ? [{ l: item.l, w: item.w, h: item.h }, { l: item.w, w: item.l, h: item.h }]
+    : getOrientations(item);
 
   let anyFit = false;
   for (const o of orientations) {

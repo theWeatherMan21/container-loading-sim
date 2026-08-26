@@ -59,6 +59,7 @@
     description: '描述',
     stackable: '可叠放',
     possibleWeight: '忽略',
+    ignore: '忽略',
     combinedDimension: '组合尺寸',
     possibleDimension: '可能尺寸',
     unknown: '忽略'
@@ -135,6 +136,13 @@
         stepEl.classList.add('steps__step--active');
       }
     }
+    document.querySelectorAll('[data-context-step]').forEach(panel => {
+      panel.classList.toggle('context-panel--active', Number(panel.dataset.contextStep) === activeStep);
+    });
+    const status = document.getElementById('workspace-status');
+    if (status) {
+      status.textContent = ['准备导入', '确认数据', '配置方案', '结果检查'][activeStep - 1] || '工作区';
+    }
   }
 
   // ═══════════════════════════════════════════
@@ -149,6 +157,10 @@
     success: {
       bg: '#E8F8F0', border: '#A3D4B0', color: '#1E7E47', icon: '✨',
       className: 'alert-success'
+    },
+    warning: {
+      bg: '#FFF9E6', border: '#E8D5A0', color: '#8B7516', icon: '⚠️',
+      className: 'alert-warning'
     }
   };
 
@@ -221,6 +233,30 @@
   // activeCalcHandle 持有 simulateProgress 的取消句柄，可提前清除未触发的 setTimeout。
   let calcGeneration = 0;
   let activeCalcHandle = null;
+  // app#11：推荐预演防串台——连续触发多次预演时，仅最后一次结果生效（与 calcGeneration 同理）。
+  let recSimToken = 0;
+  let recommendationWorker = null;
+  let recommendationWorkerRequestId = 0;
+
+  function getRecommendationWorker() {
+    if (typeof Worker === 'undefined') return null;
+    if (!recommendationWorker) {
+      try {
+        recommendationWorker = new Worker('recommendation-worker.js');
+      } catch (error) {
+        console.warn('[refreshContainerRecommendation] Worker unavailable:', error.message);
+        return null;
+      }
+    }
+    return recommendationWorker;
+  }
+
+  function cancelRecommendationWorker() {
+    if (recommendationWorker) {
+      recommendationWorker.terminate();
+      recommendationWorker = null;
+    }
+  }
 
   /**
    * Simulate progress while synchronous calculation runs.
@@ -241,15 +277,19 @@
     }
 
     // 延迟启动真实计算，确保 UI 渲染；返回可取消句柄供作废
+    let handle = null;
     const timeoutId = setTimeout(() => {
+      // callback fired, handle is stale - drop the reference so future invalidation is clean
+      if (activeCalcHandle === handle) activeCalcHandle = null;
       if (onDone) onDone();
     }, 100);
 
-    return {
+    handle = {
       cancel() {
         clearTimeout(timeoutId);
       }
     };
+    return handle;
   }
 
   // ═══════════════════════════════════════════
@@ -947,6 +987,8 @@
       // Apply multi-size decisions: for models with multiple size groups, use selected size
       const multiSize = FP.detectMultiSize(result.items);
       const mergedItems = [];
+      // app#10：收集"合并单重差异显著"的警示，确认完成后统一提示
+      const mergeWeightWarnings = [];
 
       for (const [model, info] of Object.entries(multiSize)) {
         const selectedIdx = state.multiSizeDecisions[model] || 0;
@@ -955,10 +997,27 @@
           // Use selected dimensions for all items of this model
           const modelItems = result.items.filter(i => i.model === model);
           const totalQty = modelItems.reduce((s, i) => s + (i.quantity || 1), 0);
-          // app#10：同型号多尺寸组合并时，重量按数量加权平均（Σ(weight×qty)/Σqty），
-          // 无重量行按 0 参与；不再取第一行重量应用于全部数量。
-          const totalWeight = modelItems.reduce((s, i) => s + (i.weight || 0) * (i.quantity || 1), 0);
-          const mergedWeight = totalQty > 0 ? totalWeight / totalQty : 0;
+          // app#10：同型号多尺寸组合并单重 = 数量加权平均（Σ(组数量×组单重)/Σ组数量）。
+          // weight=0（缺失）的行不参与加权（避免把未知重量拉低成 0 附近的假值），
+          // 但数量仍计入总件数。各组单重差异显著（最大/最小 > 1.5 倍）时推 warning。
+          const weightGroups = modelItems
+            .filter(i => i.weight > 0)
+            .map(i => ({ qty: i.quantity || 1, weight: i.weight }));
+          const weightedTotalQty = weightGroups.reduce((s, g) => s + g.qty, 0);
+          const mergedWeight = weightedTotalQty > 0
+            ? weightGroups.reduce((s, g) => s + g.qty * g.weight, 0) / weightedTotalQty
+            : 0;
+          if (weightGroups.length >= 2) {
+            const gw = weightGroups.map(g => g.weight);
+            const maxW = Math.max(...gw);
+            const minW = Math.min(...gw);
+            if (minW > 0 && maxW / minW > 1.5) {
+              mergeWeightWarnings.push(
+                `SKU「${model}」合并单重 ${mergedWeight.toFixed(3)} kg 为 ${weightGroups.length} 组尺寸的数量加权平均，` +
+                `各组单重差异显著（${minW}~${maxW} kg，最大/最小 = ${(maxW / minW).toFixed(1)} 倍），请确认数据无误～ 🥛`
+              );
+            }
+          }
 
           // Preserve stackable/orientationFixed from first item
           const firstItem = modelItems[0] || {};
@@ -999,6 +1058,13 @@
       // Render Step 3
       renderStep3();
       showStep(3);
+
+      // app#10：单重显著差异警示——写入数据层 warnings（供后续展示），
+      // 并在 Step 3 顶部给出立即可见的提示（warning 样式常驻，不自动消失）。
+      if (mergeWeightWarnings.length > 0) {
+        state.parsedResult.warnings = (state.parsedResult.warnings || []).concat(mergeWeightWarnings);
+        createAlert('warning', mergeWeightWarnings.join('；'), '#step-3', { autoDismiss: false });
+      }
 
     } catch (err) {
       console.error('Data confirmation error:', err);
@@ -1513,6 +1579,10 @@
     const altEl = $('alternative-containers');
     if (!recEl || !altEl) return;
 
+    // 每次刷新都作废已排队的预演回调；否则同步刷新路径可能被旧结果覆盖。
+    const refreshToken = ++recSimToken;
+    cancelRecommendationWorker();
+
     try {
       const recommendation = CDB.autoRecommend(state.items, state.tolerance);
       console.debug('[refreshContainerRecommendation] recommendation:', recommendation);
@@ -1528,41 +1598,96 @@
         // 只对"单件适配但可能多箱"的场景做预演：货物数量 ≥2 时才值得比较
         const totalQty = state.items.reduce((s, i) => s + (i.quantity || 1), 0);
         if (totalQty >= 2) {
-          try {
-            const simulation = PE.simulateContainerOptions(state.items, candidates, {
-              tolerance: state.tolerance,
-              optimizationSeed: 20260805,
-              randomStarts: 8,
-              optimizationTimeMs: 3000
+          // app#11：预演始终在独立 Worker 中执行，避免同步装箱计算阻塞浏览器 UI 主线程。
+          // Worker 不可用时保留基础推荐，Worker 运行失败时也不退回主线程同步预演。
+          // recSimToken 防串台：连续触发多次预演时，仅最后一次结果生效。
+          recEl.innerHTML =
+            '<div id="sim-preview-loading" style="padding:16px;background:#F5F0EB;border:1px dashed #B8A89A;' +
+            'border-radius:12px;color:#7A706B;font-size:13px;text-align:center;">' +
+            '🛠️ 正在预演装载方案，请稍候…</div>';
+          altEl.innerHTML = '';
+          const simToken = refreshToken;
+          const worker = getRecommendationWorker();
+          const simulationOptions = {
+            tolerance: state.tolerance,
+            optimizationSeed: 20260805,
+            randomStarts: 4,
+            optimizationTimeMs: 1500
+          };
+          const finishSimulation = (simulation) => {
+            if (simToken !== recSimToken) return;
+            try {
+              console.debug('[refreshContainerRecommendation] simulation:', simulation.map(s => `${s.code}:${s.containerCount}箱`).join(', '));
+              // 单箱容量优先：若某箱型模拟退火确认"单箱可装完全部"，直接推荐（珍珠解识别）。
+              const oneBoxFit = simulation.find(s => s.feasible && s.singleBoxCapacity != null && s.singleBoxCapacity >= s.totalItems);
+              if (oneBoxFit && oneBoxFit.code !== recommendation.primary.code) {
+                const promoted = CDB.CONTAINER_DB[oneBoxFit.code];
+                if (promoted) {
+                  recommendation.primary = promoted;
+                  recommendation.reasoning =
+                    `实际装箱验证：${oneBoxFit.code} 可单箱装完全部 ${oneBoxFit.totalItems} 件货物，` +
+                    `优于原推荐 ${recommendation.primary.code}（需 ${(simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount || '?'} 箱）。`;
+                  recommendation.promotedBySimulation = true;
+                }
+              }
+              const bestSim = simulation.find(s => s.feasible);
+              if (bestSim && bestSim.code !== recommendation.primary.code &&
+                  bestSim.containerCount < (simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount) {
+                const promoted = CDB.CONTAINER_DB[bestSim.code];
+                if (promoted) {
+                  recommendation.primary = promoted;
+                  recommendation.reasoning =
+                    `实际装箱预演：${bestSim.code} 仅需 ${bestSim.containerCount} 箱装完，` +
+                    `优于原推荐 ${recommendation.primary.code}（需 ${(simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount || '?'} 箱）。`;
+                  recommendation.promotedBySimulation = true;
+                }
+              }
+            } catch (simErr) {
+              console.warn('[refreshContainerRecommendation] simulation failed:', simErr.message);
+            }
+            if (!recommendation || recommendation.type === 'failed') {
+              renderFailedRecommendation(recEl, altEl);
+            } else if (recommendation.type === 'mixed') {
+              renderMixedRecommendation(recommendation.mixed, recEl, altEl);
+            } else {
+              renderSingleRecommendation(recommendation, recEl, altEl);
+            }
+            ensureCalculateButton();
+          };
+
+          // 预演始终在 Worker 内执行，避免任何大货量方案阻塞 UI 主线程。
+          // Worker 不可用或运行失败时保留基于单件适配的初始推荐，不退回同步预演。
+          if (worker) {
+            const requestId = ++recommendationWorkerRequestId;
+            worker.onmessage = (event) => {
+              const message = event.data || {};
+              if (message.requestId !== requestId || simToken !== recSimToken) return;
+              worker.onmessage = null;
+              if (message.type === 'error') {
+                console.warn('[refreshContainerRecommendation] worker simulation failed:', message.message);
+                finishSimulation([]);
+                return;
+              }
+              finishSimulation(message.simulation || []);
+            };
+            worker.onerror = (error) => {
+              if (simToken !== recSimToken) return;
+              worker.onerror = null;
+              console.warn('[refreshContainerRecommendation] worker unavailable:', error.message || error);
+              cancelRecommendationWorker();
+              finishSimulation([]);
+            };
+            worker.postMessage({
+              type: 'simulate',
+              requestId,
+              items: state.items,
+              candidates,
+              options: simulationOptions
             });
-            console.debug('[refreshContainerRecommendation] simulation:', simulation.map(s => `${s.code}:${s.containerCount}箱`).join(', '));
-            // 单箱容量优先：若某箱型模拟退火确认"单箱可装完全部"，直接推荐（珍珠解识别）。
-            const oneBoxFit = simulation.find(s => s.feasible && s.singleBoxCapacity != null && s.singleBoxCapacity >= s.totalItems);
-            if (oneBoxFit && oneBoxFit.code !== recommendation.primary.code) {
-              const promoted = CDB.CONTAINER_DB[oneBoxFit.code];
-              if (promoted) {
-                recommendation.primary = promoted;
-                recommendation.reasoning =
-                  `实际装箱验证：${oneBoxFit.code} 可单箱装完全部 ${oneBoxFit.totalItems} 件货物，` +
-                  `优于原推荐 ${recommendation.primary.code}（需 ${(simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount || '?'} 箱）。`;
-                recommendation.promotedBySimulation = true;
-              }
-            }
-            const bestSim = simulation.find(s => s.feasible);
-            if (bestSim && bestSim.code !== recommendation.primary.code &&
-                bestSim.containerCount < (simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount) {
-              const promoted = CDB.CONTAINER_DB[bestSim.code];
-              if (promoted) {
-                recommendation.primary = promoted;
-                recommendation.reasoning =
-                  `实际装箱预演：${bestSim.code} 仅需 ${bestSim.containerCount} 箱装完，` +
-                  `优于原推荐 ${recommendation.primary.code}（需 ${(simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount || '?'} 箱）。`;
-                recommendation.promotedBySimulation = true;
-              }
-            }
-          } catch (simErr) {
-            console.warn('[refreshContainerRecommendation] simulation failed:', simErr.message);
+          } else {
+            finishSimulation([]);
           }
+          return; // 渲染由 Worker/降级分支完成
         }
       }
 
@@ -1741,22 +1866,18 @@
 
     const totalItems = result.totalItems || (result.totalPlaced + (result.unplacedCount || 0));
     const cards = [
-      { label: '所需箱数', value: actualBoxes, unit: '个', color: '#8FA39B', hint: boxHint },
-      { label: '平均利用率', value: (result.avgUtilization * 100).toFixed(1), unit: '%', color: '#8B9E8B' },
-      { label: '总装载重量', value: (result.totalWeightLoaded / 1000).toFixed(2), unit: '吨', color: '#B8A89A' },
-      { label: '已装件数', value: `${result.totalPlaced}`, unit: `/ ${totalItems} 件`, color: '#9C8B7D',
+      { label: '所需箱数', value: actualBoxes, unit: '个', cls: 'rs-boxes', hint: boxHint },
+      { label: '平均利用率', value: (result.avgUtilization * 100).toFixed(1), unit: '%', cls: 'rs-util' },
+      { label: '总装载重量', value: (result.totalWeightLoaded / 1000).toFixed(2), unit: '吨', cls: 'rs-weight' },
+      { label: '已装件数', value: `${result.totalPlaced}`, unit: `/ ${totalItems} 件`, cls: 'rs-items',
         hint: result.unplacedCount > 0 ? `${result.unplacedCount} 件未能装入` : '全部装入 ✓' }
     ];
 
     el.innerHTML = cards.map(c => `
-      <div style="flex:1;min-width:120px;background:#fff;border-radius:16px;padding:18px 16px;
-                  box-shadow:0 2px 8px rgba(0,0,0,0.05);text-align:center;
-                  border-top:3px solid ${c.color};">
-        <div style="font-size:12px;color:#7A706B;margin-bottom:4px;">${c.label}</div>
-        <div style="font-size:24px;font-weight:700;color:${c.color};">
-          ${c.value}<span style="font-size:14px;font-weight:400;margin-left:2px;">${c.unit}</span>
-        </div>
-        ${c.hint ? `<div style="font-size:10px;color:#C9A05A;margin-top:2px;">${c.hint}</div>` : ''}
+      <div class="result-summary__card ${c.cls}">
+        <div class="result-summary__label">${c.label}</div>
+        <div class="result-summary__number">${c.value}<span class="result-summary__unit">${c.unit}</span></div>
+        ${c.hint ? `<div class="result-summary__hint">${c.hint}</div>` : ''}
       </div>
     `).join('');
 
@@ -1766,31 +1887,26 @@
         `${s.code}（${s.reason}）`
       ).join('、');
       el.insertAdjacentHTML('beforeend', `
-        <div style="width:100%;margin-top:8px;padding:8px 12px;background:#FFF9E6;border:1px solid #E8D5A0;border-radius:8px;font-size:11px;color:#8B7516;">
-          💡 推荐${recommendedBoxes}箱基于体积估算（×1.3 余量），实际 3D EMS 优化算法仅需 ${actualBoxes} 箱即可装完所有货物。未使用的箱型：${skippedInfo}
+        <div class="result-summary__note">
+          推荐${recommendedBoxes}箱基于体积估算（×1.3 余量），实际 EMS 算法仅需 ${actualBoxes} 箱即可装完所有货物。未使用的箱型：${skippedInfo}
         </div>
       `);
     }
-
-    el.style.display = 'flex';
-    el.style.gap = '12px';
-    el.style.flexWrap = 'wrap';
   }
 
   function renderContainerTabs(result) {
     const el = $('container-tabs');
     if (!el) return;
 
-    let html = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">';
+    let html = '<div class="container-tabs__row">';
     for (let i = 0; i < result.containers.length; i++) {
       const c = result.containers[i];
-      const active = i === 0 ? ' style="background:#8FA39B;color:#fff;"' :
-        ' style="background:#F5F0EB;color:#3D3535;"';
+      const active = i === 0 ? ' container-tab-btn--active' : '';
       const isFR = c.containerCode && c.containerCode.includes('FR');
       const effLabel = isFR && c.spaceEfficiency != null
         ? `${(c.spaceEfficiency * 100).toFixed(1)}%`
         : (c.utilization ? `${(c.utilization * 100).toFixed(1)}%` : 'N/A');
-      html += `<button class="container-tab-btn" data-index="${i}"${active}>
+      html += `<button type="button" class="container-tab-btn${active}" data-index="${i}">
         箱 ${i + 1} | ${effLabel}
       </button>`;
     }
@@ -1811,11 +1927,9 @@
 
         // Update active styles
         el.querySelectorAll('.container-tab-btn').forEach(b => {
-          b.style.background = '#F5F0EB';
-          b.style.color = '#3D3535';
+          b.classList.remove('container-tab-btn--active');
         });
-        this.style.background = '#8FA39B';
-        this.style.color = '#fff';
+        this.classList.add('container-tab-btn--active');
 
         // Update detail
         updateContainerDetail(result, idx);
@@ -2102,6 +2216,23 @@
   // Navigation: step buttons
   // ═══════════════════════════════════════════
   function initNavigation() {
+    document.querySelectorAll('.steps__step').forEach(stepEl => {
+      const go = () => {
+        const targetStep = Number(stepEl.dataset.step);
+        if (!Number.isInteger(targetStep) || targetStep < 1 || targetStep > 4) return;
+        if (targetStep <= state.currentStep || (targetStep === 2 && state.items.length) || (targetStep === 3 && state.items.length) || (targetStep === 4 && state.packingResult)) {
+          showStep(targetStep);
+        }
+      };
+      stepEl.addEventListener('click', go);
+      stepEl.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          go();
+        }
+      });
+    });
+
     // Back buttons in steps 2-4
     for (let step = 2; step <= 4; step++) {
       const backBtn = document.querySelector(`#step-${step} .btn-back`);
@@ -2109,6 +2240,22 @@
         backBtn.addEventListener('click', () => {
           showStep(step - 1);
         });
+      }
+    }
+
+    // Tauri 打包 CSP 兜底：内联 onclick 在发布包中可能被静默拦截（浏览器不受影响），
+    // 所有依赖内联 onclick 的导航按钮在此补 JS 绑定；重复触发均幂等（showStep/resetState）。
+    const inlineFallbacks = [
+      ['#step-2 button[onclick*="goToStep(1)"]', () => showStep(1)],
+      ['#step-3 button[onclick*="goToStep(2)"]', () => showStep(2)],
+      ['#step-4 button[onclick*="goToStep(3)"]', () => showStep(3)],
+      ['#step-4 button[onclick*="resetState"]', () => App.resetState()]
+    ];
+    for (const [selector, handler] of inlineFallbacks) {
+      const btn = document.querySelector(selector);
+      if (btn && !btn.dataset.inlineFallbackBound) {
+        btn.dataset.inlineFallbackBound = '1';
+        btn.addEventListener('click', handler);
       }
     }
 
@@ -2239,6 +2386,9 @@
       // 旧 onDone 即使已进入队列也会因 token 失配而放弃渲染/跳转。
       calcGeneration++;
       if (activeCalcHandle) { activeCalcHandle.cancel(); activeCalcHandle = null; }
+      // 作废并终止仍在运行的推荐预演，避免重置后旧结果写回新的界面状态。
+      recSimToken++;
+      cancelRecommendationWorker();
       // 清理 3D 视图：释放渲染器/场景/rAF，避免"重新开始"后资源泄漏
       // （此前遗漏，与 Step 2"重新上传"的清理逻辑对齐）
       const TV = getTV();

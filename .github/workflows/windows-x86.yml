@@ -35,6 +35,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run tests
+        run: npm test
+
+      - name: Build and verify frontend
+        run: npm run build:frontend
+
       - name: Build Windows x86_64 installer
         run: npx tauri build --target $env:TAURI_TARGET
 

@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>智能装箱模拟系统</title>
+<title>The Robotary · 智能装箱模拟系统</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='9' width='18' height='14' fill='none' stroke='%23176B87' stroke-width='3'/%3E%3Cpath d='M22 21l6-8' stroke='%23237A57' stroke-width='3'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -11,9 +12,19 @@
 <div class="header">
   <div class="header__inner">
     <div class="header__brand">
-      <h1 class="header__title">智能装箱<em>模拟系统</em></h1>
-      <p class="header__subtitle">上传装箱单 / 智能解析 / 3D装箱计算 / 导出报告</p>
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true"><span></span><i></i></span>
+        <span>
+          <strong class="brand-name">The Robotary</strong>
+          <small class="brand-owner">by MESA LLC.</small>
+        </span>
+      </div>
+      <div class="header__product">
+        <h1 class="header__title">智能装箱模拟系统</h1>
+        <p class="header__subtitle">规划、校验并可视化您的装箱方案</p>
+      </div>
     </div>
+    <div class="header__status"><span class="status-dot"></span><span>本地工作区</span><span class="status-divider"></span><span id="workspace-status">准备导入</span></div>
     <div class="theme-switcher" role="group" aria-label="主题切换">
       <button class="theme-btn active" data-theme="light" aria-label="浅色主题" title="浅色主题">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
@@ -28,23 +39,32 @@
   </div>
 </div>
 
-<div class="container">
+<div class="workspace" id="workspace-shell">
 
   <!-- Step Indicators -->
-  <div class="steps" id="step-indicators">
-    <div class="steps__step steps__step--active" data-step="1">
-      <span class="steps__number">1</span><span class="steps__label">上传装箱单</span>
+  <aside class="sidebar" aria-label="工作流程">
+    <div class="sidebar__heading"><span>工作流程</span><span class="sidebar__count">04</span></div>
+    <nav class="steps" id="step-indicators" aria-label="装箱流程">
+      <div class="steps__step steps__step--active" data-step="1" tabindex="0">
+        <span class="steps__number">1</span><span class="steps__copy"><span class="steps__label">导入货物</span><small>上传或手动录入</small></span>
+      </div>
+      <div class="steps__step" data-step="2" tabindex="0">
+        <span class="steps__number">2</span><span class="steps__copy"><span class="steps__label">确认数据</span><small>检查字段与单位</small></span>
+      </div>
+      <div class="steps__step" data-step="3" tabindex="0">
+        <span class="steps__number">3</span><span class="steps__copy"><span class="steps__label">装箱配置</span><small>选择箱型与规则</small></span>
+      </div>
+      <div class="steps__step" data-step="4" tabindex="0">
+        <span class="steps__number">4</span><span class="steps__copy"><span class="steps__label">结果检查</span><small>查看 3D 方案</small></span>
+      </div>
+    </nav>
+    <div class="sidebar__footer">
+      <span class="sidebar__eyebrow">SIMULATION WORKSPACE</span>
+      <p>从数据到方案，保持每一步可追溯。</p>
     </div>
-    <div class="steps__step" data-step="2">
-      <span class="steps__number">2</span><span class="steps__label">确认数据</span>
-    </div>
-    <div class="steps__step" data-step="3">
-      <span class="steps__number">3</span><span class="steps__label">装箱配置</span>
-    </div>
-    <div class="steps__step" data-step="4">
-      <span class="steps__number">4</span><span class="steps__label">装箱结果</span>
-    </div>
-  </div>
+  </aside>
+
+  <main class="main-workspace">
 
   <!-- Progress -->
   <div class="progress hidden" id="progress-bar">
@@ -111,7 +131,7 @@
         </div>
         <div class="manual-entry__actions">
           <button class="btn-secondary" id="btn-add-manual" type="button">+ 添加货物</button>
-          <button class="btn-primary" id="btn-manual-calc" type="button" disabled>使用以上数据开始计算</button>
+          <button class="btn-primary" id="btn-manual-calc" type="button" disabled>使用下方货物数据计算</button>
         </div>
       </div>
       <div class="manual-entry__list" id="manualList"></div>
@@ -194,14 +214,14 @@
       <div class="container-tabs" id="container-tabs"></div>
     </div>
 
-    <div class="flex gap-4 mt-4" style="flex-wrap:wrap">
-      <div class="viewer-3d" id="three-viewer-container" style="flex:1;min-width:400px">
+    <div class="result-layout mt-4">
+      <div class="viewer-3d" id="three-viewer-container">
         <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#B8A89A;">
           已加载 3D 视图
         </div>
       </div>
 
-      <div style="flex:0 0 300px">
+      <div class="result-detail-column">
         <div id="container-detail"></div>
         <div class="mt-4" id="warnings-panel"></div>
       </div>
@@ -216,10 +236,37 @@
     </div>
   </div>
 
-</div><!-- /.container -->
+  </main>
+
+  <aside class="context-rail" aria-label="上下文摘要">
+    <div class="context-rail__top"><span class="sidebar__eyebrow">LIVE SUMMARY</span><span class="context-rail__signal"></span></div>
+    <section class="context-panel" data-context-step="1">
+      <h2>导入概览</h2><p class="context-panel__hint">开始导入后，这里会显示数据质量。</p>
+      <div class="context-empty">等待货物数据</div>
+    </section>
+    <section class="context-panel" data-context-step="2">
+      <h2>数据质量</h2><p class="context-panel__hint">确认前快速检查导入结果。</p>
+      <div class="metric-grid"><div><strong id="context-item-count">--</strong><span>货物件数</span></div><div><strong id="context-volume">--</strong><span>总体积</span></div><div><strong id="context-weight">--</strong><span>总重量</span></div><div><strong id="context-completeness">--</strong><span>完整度</span></div></div>
+      <div class="context-note">字段异常会在这里提示</div>
+    </section>
+    <section class="context-panel" data-context-step="3">
+      <h2>方案预览</h2><p class="context-panel__hint">推荐箱型与利用率会在计算前更新。</p>
+      <div class="context-callout"><span class="context-callout__label">主推荐箱型</span><strong>等待配置</strong></div>
+      <div class="metric-grid metric-grid--two"><div><strong>--</strong><span>预计箱数</span></div><div><strong>--</strong><span>空间利用率</span></div></div>
+      <div class="context-note">载重余量将在方案生成后显示</div>
+    </section>
+    <section class="context-panel" data-context-step="4">
+      <h2>结果摘要</h2><p class="context-panel__hint">方案生成后，在这里快速核对风险。</p>
+      <div class="metric-grid metric-grid--two"><div><strong id="context-utilization">--</strong><span>装载率</span></div><div><strong id="context-unloaded">--</strong><span>未装货物</span></div></div>
+      <div class="risk-line"><span class="risk-line__dot"></span><span>承重与尺寸风险待检查</span></div>
+      <button class="btn-ghost context-export" type="button" onclick="document.getElementById('btn-export-pdf')?.click()">导出报告 <span aria-hidden="true">↗</span></button>
+    </section>
+  </aside>
+
+</div><!-- /.workspace -->
 
 <footer class="site-footer">
-  <p>Made by Russo McAllister. MESA Funding LLC. All Rights Reserved.</p>
+  <p>The Robotary by MESA LLC. · 智能装箱模拟系统</p>
 </footer>
 
 <!-- Hidden printable report -->

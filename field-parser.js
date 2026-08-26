@@ -17,7 +17,11 @@ const FieldParser = (() => {
   const UNIT_INFERENCE = {
     MM_MAX_THRESHOLD: 5000,   // max > 5000 → mm（如 12000 明显是毫米）
     MM_AVG_THRESHOLD: 2000,   // avg > 2000 → mm
-    M_AVG_THRESHOLD: 3,       // avg < 3 → m（如 1.2, 5.8 是米级别）
+    // F-04: 判 m 条件放宽为 max<10 && (min>=1 || avg<3)：
+    //   min>=1 覆盖 [6.5,2.4,2.6] 米制大件（旧 avg<3 漏判，avg=3.83 被误判 cm）；
+    //   avg<3 保留，覆盖 [1.2,0.8,0.6]/[0.5,0.4,0.3] 等 0.x 米小箱（避免 min<1 误判 cm 回归）
+    M_AVG_THRESHOLD: 3,       // avg < 3 → m（0.x~3 米级小箱）
+    M_MIN_THRESHOLD: 1,       // min >= 1 → m（1~10 米级大件，配合 max<10）
     M_MAX_THRESHOLD: 10       // max < 10 → m
   };
 
@@ -26,10 +30,11 @@ const FieldParser = (() => {
    * 匹配格式如 "1200×800×600"、"5.7*4.3*4.29"、"1200x800x600"
    * F-05: 每维度支持可选单位后缀："1.5m×2m×3m"、"1200mm×800mm×600mm"、"1.5m×800mm×60cm"
    * 注意：
+   *  - /i 标志：单位后缀大小写通吃（"1.5M×2M×3M"、"1200MM×800MM×600MM"）
    *  - 每个数字部分只匹配整数或单个小数，防止贪婪匹配 "1.2.3"
    *  - 单位 alternation 长词在前（mm 在 m 前、inch 在 in 前、毫米/厘米 在 米 前），避免前缀误吞
    */
-  const COMBINED_DIM_PATTERN = /^([\d]+(?:\.[\d]+)?)\s*(mm|cm|m|inch|in|ft|英尺|厘米|毫米|米)?\s*[×xX*]\s*([\d]+(?:\.[\d]+)?)\s*(mm|cm|m|inch|in|ft|英尺|厘米|毫米|米)?\s*[×xX*]\s*([\d]+(?:\.[\d]+)?)\s*(mm|cm|m|inch|in|ft|英尺|厘米|毫米|米)?$/;
+  const COMBINED_DIM_PATTERN = /^([\d]+(?:\.[\d]+)?)\s*(mm|cm|m|inch|in|ft|英尺|厘米|毫米|米)?\s*[×xX*]\s*([\d]+(?:\.[\d]+)?)\s*(mm|cm|m|inch|in|ft|英尺|厘米|毫米|米)?\s*[×xX*]\s*([\d]+(?:\.[\d]+)?)\s*(mm|cm|m|inch|in|ft|英尺|厘米|毫米|米)?$/i;
 
   /**
    * 尺寸单位换算表：单位后缀 → 米(m) 倍率（F-05）
@@ -244,6 +249,12 @@ const FieldParser = (() => {
       if (decimalCount >= samples.length * 0.7) {
         const nums = samples.map(Number).filter(n => !isNaN(n));
         const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+        // F-06: 表头明确含尺寸关键词（长/宽/高/尺寸/L/W/H/dimension 等）时，
+        // 小数列也优先判尺寸——否则 "长(米)"+1.5/2/3 会被 possibleWeight 抢占，尺寸列全丢
+        const dimHeaderHit = /长|宽|高|尺寸|length|width|height|dimension/i.test(h);
+        if (dimHeaderHit) {
+          return { field: 'possibleDimension', confidence: 'medium' };
+        }
         if (avg > 0 && avg < 100) {
           return { field: 'possibleWeight', confidence: 'low' };
         }
@@ -275,9 +286,10 @@ const FieldParser = (() => {
   /**
    * F-04: 带歧义信号的单位推断（内部使用）
    * 逻辑与 inferUnit 完全一致，额外返回 ambiguous 信号：
-   * 当推断结果为 cm 且 max 落在 [50, 2000]（如 200×150×100、800×600×500，
-   * 数值上既可能厘米也可能毫米）时返回 { unit: 'cm', ambiguous: true }。
-   * 供 extractItems 推送"尺寸单位疑似厘米，若实际为毫米请确认"警告。
+   * 当推断结果为 cm 且 max 落在 [50, 2000]（如 200×150×100、800×600×500、
+   * 1200×800×50，数值上既可能厘米也可能毫米）时返回 { unit: 'cm', ambiguous: true }。
+   * 供 extractItems 推送"尺寸单位存疑（疑似毫米或厘米），请核对"警告。
+   * 不改变推断值（保守：仅提示，不强行改写）。
    */
   function inferUnitWithSignal(values) {
     const nums = values.map(v => parseFloat(v)).filter(n => !isNaN(n) && n > 0);
@@ -293,7 +305,11 @@ const FieldParser = (() => {
     // 增强：全部维度都 ≥100 且最大值 ≥1000 → 工业装箱单典型毫米（如 2500X2750X2800）。
     // 厘米下 1000+ 意味着 10m+ 的货物，在装箱场景极不合理；毫米下 100 是 10cm 小件。
     else if (min >= 100 && max >= 1000) unit = 'mm';
-    else if (avg < UNIT_INFERENCE.M_AVG_THRESHOLD && max < UNIT_INFERENCE.M_MAX_THRESHOLD) unit = 'm'; // 如 1.2, 5.8 → 米级别
+    // F-04: 分支④阈值放宽。旧规则 avg<3 && max<10 漏判 [6.5,2.4,2.6]（avg=3.83）；
+    // 新规则 max<10 && (min>=1 || avg<3)：
+    //   min>=1 覆盖 1~10 米级大件；avg<3 保留覆盖 0.x 米小箱（[1.2,0.8,0.6] 等，防回归）
+    else if (max < UNIT_INFERENCE.M_MAX_THRESHOLD &&
+             (min >= UNIT_INFERENCE.M_MIN_THRESHOLD || avg < UNIT_INFERENCE.M_AVG_THRESHOLD)) unit = 'm'; // 如 1.2, 5.8, 6.5 → 米级别
     else unit = 'cm';                         // 30~2000 → 厘米
 
     // F-04: 判 cm 且 max∈[50,2000] → 可能是 mm（mm 量纲下 50~2000 即 5cm~2m，装箱场景常见）
@@ -320,10 +336,10 @@ const FieldParser = (() => {
     // F-06: 全角括号先归一化（"长（毫米）" → "长(毫米)"），再检测中文尺寸单位
     let h = String(headerText || '').toLowerCase().replace(/[（）]/g, m => m === '（' ? '(' : ')');
 
-    // F-06: 中文尺寸单位优先（长词在前："毫米/厘米" 含 "米" 子串，必须排在 "米" 前）
+    // F-06: 中文尺寸单位优先（长词在前："毫米/厘米/公分" 含 "米" 子串，必须排在 "米" 前）
     // 重量单位（公斤/千克/克/吨/磅/盎司）由 detectWeightUnitFromHeader 负责，此处不重复实现
     if (/毫米/.test(h)) return 'mm';
-    if (/厘米/.test(h)) return 'cm';
+    if (/厘米|公分/.test(h)) return 'cm';
     if (/米/.test(h)) return 'm';
 
     // mm: matches "mm", "millimeter", "millimeters"
@@ -710,7 +726,7 @@ const FieldParser = (() => {
         const sig = inferUnitWithSignal(allValues.length > 0 ? allValues : []);
         dimUnit = sig.unit;
         if (sig.ambiguous && sig.unit === 'cm' && !warnings.includes('dim_unit_ambiguous')) {
-          warnings.push('尺寸单位疑似厘米，若实际为毫米请确认');
+          warnings.push('尺寸单位存疑（疑似毫米或厘米），请核对');
         }
         if (headerUnits.size === 0 && !warnings.includes('dim_unit_inferred')) {
           warnings.push(`表头未声明尺寸单位，已根据数值推断为 ${dimUnit}，请确认单位是否正确`);
@@ -748,11 +764,12 @@ const FieldParser = (() => {
           const splitMatch = cleaned.match(COMBINED_DIM_PATTERN);
           if (splitMatch) {
             // F-05: 每维度可选单位后缀（"1.5m×2m×3m"、"1200mm×800mm×600mm"、混合单位）
+            // 正则 /i 标志允许大写（"1.5M×2M×3M"），此处统一 toLowerCase 再查换算表
             // 有后缀 → 按后缀换算为米；无后缀 → 沿用整列推断单位 dimUnit
             const dimParts = [
-              { num: parseFloat(splitMatch[1]), unit: splitMatch[2] || null },
-              { num: parseFloat(splitMatch[3]), unit: splitMatch[4] || null },
-              { num: parseFloat(splitMatch[5]), unit: splitMatch[6] || null }
+              { num: parseFloat(splitMatch[1]), unit: splitMatch[2] ? splitMatch[2].toLowerCase() : null },
+              { num: parseFloat(splitMatch[3]), unit: splitMatch[4] ? splitMatch[4].toLowerCase() : null },
+              { num: parseFloat(splitMatch[5]), unit: splitMatch[6] ? splitMatch[6].toLowerCase() : null }
             ];
             let rowUnitConflict = false;
             const meters = dimParts.map(dp => {

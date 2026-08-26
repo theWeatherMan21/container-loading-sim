@@ -58,6 +58,8 @@ let tooltipEl = null;        // tooltip DOM 元素
 let cargoMeshes = [];        // 所有 cargo mesh 平铺引用（用于 raycasting）
 let canvasEls = [];          // 所有 canvas DOM 元素（用于 event listener 清理）
 let labelSprites = [];       // 所有标签 Sprite（型号/旋转/超限/尺寸标注），供"显示标签"开关控制
+let shotRenderer = null;     // V-05-R2：共享截图渲染器（单例，跑在离屏 canvas 上）
+let shotCanvas = null;       // V-05-R2：截图专用离屏画布（不挂 DOM）
 
 // ═══════════════════════════════════════════
 // 资源清理
@@ -88,6 +90,9 @@ function disposeAll() {
   }
   renderers = {};
   containerSpecs = {};
+
+  // V-05-R2：终局销毁时一并释放共享离屏截图渲染器
+  disposeShotRenderer();
 
   for (const ctrl of Object.values(controls)) {
     ctrl.dispose();
@@ -143,6 +148,13 @@ function disposeAll() {
   activeCanvasId = null;
   allCanvases = [];
   parentEl = null;
+
+  // V-02 修复（兜底）：场景遍历之外的孤儿标签 Sprite（如构建中途异常未挂入 scene 的）——
+  // 经 labelSprites 统一数组全量释放其材质 map 纹理，与上方 scene.traverse 形成双保险，
+  // 杜绝重复 build/dispose 循环的 CanvasTexture 泄漏。与遍历共用 disposedTextures 去重，不会二次释放。
+  for (const sp of labelSprites) {
+    if (sp && sp.material) disposeMaterialMap(sp.material, disposedTextures);
+  }
 
   // 清理 tooltip 和悬停事件
   if (tooltipEl) { tooltipEl.remove(); tooltipEl = null; }
@@ -624,18 +636,21 @@ function setupCameraRenderer(scene, canvasId, containerSpec) {
 }
 
 /**
- * V-01 修复：销毁指定容器的 renderer 并强制释放 WebGL context。
- * 切换容器时先销毁旧 renderer（单活模式），保证任何时刻活跃 context ≤ 3。
- * camera 为纯 JS 对象（无 GPU 资源），保留复用；OrbitControls 绑定 canvas，
- * 随 renderer 一起释放，切换后懒重建。
+ * V-01 修复：销毁指定容器的 renderer（单活模式），切换后懒重建。
+ *
+ * V-05 修复（3D 多箱来回切换空白）：移除 forceContextLoss()。
+ * 原实现切换时对旧 canvas 强制丢失 context，而 canvas 元素本身保留在 DOM；
+ * 切回时懒创建在同一 canvas 上 new WebGLRenderer —— 按 W3C 规范，
+ * 被强制丢失的 context 永久处于 lost 态，getContext 返回死 context，
+ * 其上 getShaderPrecisionFormat 等查询返回 null，Three.js 构造函数直接抛
+ * 「Cannot read properties of null (reading 'precision')」，渲染初始化中断 → 画面空白。
+ * 改为仅 renderer.dispose()：释放 GPU 资源但保留 context 可用性，
+ * 切回时可正常复用同一 canvas 重建 renderer；单活模式保证同时活跃 context 数不变。
  */
 function disposeRenderer(canvasId) {
   const renderer = renderers[canvasId];
   if (renderer) {
     try { renderer.dispose(); } catch (e) { console.warn(`[disposeRenderer] dispose fail ${canvasId}:`, e); }
-    if (renderer.forceContextLoss) {
-      try { renderer.forceContextLoss(); } catch (e) { /* noop */ }
-    }
     delete renderers[canvasId];
   }
   const ctrl = controls[canvasId];
@@ -646,26 +661,37 @@ function disposeRenderer(canvasId) {
 }
 
 /**
- * V-01 修复：临时 renderer（截图用）。不注册进 renderers map，
- * 使用后立即 dispose + forceContextLoss，避免 context 泄漏。
+ * V-05-R2 修复：截图渲染器改为「共享单例 + 离屏 canvas」。
+ *
+ * 原实现（createTempRenderer）：在每个待截图箱型的正式 canvas 上 new WebGLRenderer——
+ * 对从未激活过的箱会新建 context（N 箱 = N 个新 context），且这些 context 永久驻留；
+ * 大 N 时 PDF 导出循环中触发浏览器驱逐最老 context（可能是当前活跃画面）→ 导出中途空白。
+ *
+ * 新实现：全局仅 1 个游离 canvas + 1 个长驻 renderer，所有截图复用。
+ * Scene/Camera 与 canvas 无绑定关系（渲染管线纯参数传入），离屏渲染等价产出截图。
+ * 恒定 +1 context，与箱数、导出页数无关；且不再触碰活跃 renderer 的状态。
  */
-function createTempRenderer(canvasId, targetWidth, targetHeight) {
-  const canvas = document.getElementById(canvasId);
-  if (!canvas) return null;
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
-  const w = targetWidth || canvas.clientWidth || (parentEl ? parentEl.clientWidth : 0) || 800;
-  const h = targetHeight || canvas.clientHeight || (parentEl ? parentEl.clientHeight : 0) || 600;
-  renderer.setSize(w, h, false);
-  renderer.setPixelRatio(1);
-  renderer.shadowMap.enabled = false;
-  return renderer;
+function ensureShotRenderer(targetWidth, targetHeight) {
+  if (!shotRenderer) {
+    shotCanvas = document.createElement('canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas: shotCanvas, antialias: false, preserveDrawingBuffer: true });
+    renderer.setPixelRatio(1);
+    renderer.shadowMap.enabled = false;
+    shotRenderer = renderer;
+  }
+  if (targetWidth && targetHeight) {
+    shotRenderer.setSize(targetWidth, targetHeight, false);
+  }
+  return shotRenderer;
 }
 
-function disposeTempRenderer(renderer) {
-  if (!renderer) return;
-  try { renderer.dispose(); } catch (e) { /* noop */ }
-  if (renderer.forceContextLoss) {
-    try { renderer.forceContextLoss(); } catch (e) { /* noop */ }
+function disposeShotRenderer() {
+  if (shotRenderer) {
+    try { shotRenderer.dispose(); } catch (e) { /* noop */ }
+    // 终局清理：离屏 canvas 随之废弃，此处强杀语义正确
+    if (shotRenderer.forceContextLoss) { try { shotRenderer.forceContextLoss(); } catch (e) { /* noop */ } }
+    shotRenderer = null;
+    shotCanvas = null;
   }
 }
 
@@ -718,14 +744,54 @@ function showContainer(index) {
   activeCanvasId = target.canvasId;
 
   // V-01 修复：懒创建 —— 仅对当前可见容器创建 renderer
+  // V-05-R2 修复：构造可能因 canvas context 已 lost（浏览器驱逐最老 context 等）抛 TypeError，
+  // 原实现无保护直接穿透 → 自愈块（if (renderer)）被跳过 → 空白。现 catch 后统一走自愈路由。
   let renderer = renderers[target.canvasId];
   if (!renderer) {
     const scene = scenes[target.canvasId];
     const spec = containerSpecs[target.canvasId];
     if (scene && spec) {
-      setupCameraRenderer(scene, target.canvasId, spec);
+      try {
+        setupCameraRenderer(scene, target.canvasId, spec);
+      } catch (err) {
+        console.warn(`[showContainer] ${target.canvasId} renderer 创建失败，进入自愈:`, err);
+      }
       renderer = renderers[target.canvasId];
     }
+  }
+
+  // V-05-R2 自愈：两种触发源统一路由到这里 ——
+  //   a) 构造成功但 gl.isContextLost() 为真（构造后才丢失）
+  //   b) 构造本身抛错（canvas 已 lost，上面 catch 捕获后 renderer 为 undefined）
+  // 处理：换全新 canvas 元素（cloneNode 保 id/style；事件监听器随后重绑）→ 重跑 setupCameraRenderer。
+  const needsHeal = !renderer || (() => {
+    try {
+      const gl = renderer.getContext();
+      return !!(gl && gl.isContextLost && gl.isContextLost());
+    } catch (e) { return true; }
+  })();
+  if (needsHeal) {
+    console.warn(`[showContainer] ${target.canvasId} 检测到 lost/不可用 context，替换 canvas 自愈`);
+    disposeRenderer(target.canvasId);
+    const oldCanvas = document.getElementById(target.canvasId);
+    const fresh = oldCanvas ? oldCanvas.cloneNode(false) : document.createElement('canvas');
+    fresh.id = target.canvasId;
+    if (!fresh.style.cssText) {
+      fresh.style.cssText = 'width:100%;height:100%;display:block;touch-action:none;';
+    }
+    if (oldCanvas && oldCanvas.parentNode) {
+      oldCanvas.parentNode.replaceChild(fresh, oldCanvas);
+    } else {
+      target.wrapper.appendChild(fresh);
+    }
+    // 同步刷新 canvasEls 中的旧引用（disposeAll 清理用），避免持有死节点
+    const elIdx = canvasEls.findIndex(c => c === oldCanvas);
+    if (elIdx >= 0) canvasEls[elIdx] = fresh;
+    // 重绑悬停事件（cloneNode 不复制监听器；旧监听器随旧 canvas 废弃）
+    fresh.addEventListener('mousemove', onCanvasMouseMove, { passive: true });
+    fresh.addEventListener('mouseleave', () => { if (tooltipEl) tooltipEl.style.display = 'none'; });
+    setupCameraRenderer(scenes[target.canvasId], target.canvasId, containerSpecs[target.canvasId]);
+    renderer = renderers[target.canvasId];
   }
 
   // resize 到最新尺寸
@@ -851,7 +917,7 @@ function createPresetButtons() {
 }
 
 // ═══════════════════════════════════════════
-// 截图
+// 截图（V-05-R2：全部走共享离屏渲染器，不触碰正式 canvas）
 // ═══════════════════════════════════════════
 
 function captureScreenshot(canvasId) {
@@ -859,13 +925,9 @@ function captureScreenshot(canvasId) {
   const camera = cameras[canvasId];
   if (!scene || !camera) return null;
 
-  let renderer = renderers[canvasId];
-  let temp = null;
-  if (!renderer) {
-    // V-01 修复：无活跃 renderer（懒创建模式）时临时创建，截图后即销毁
-    temp = createTempRenderer(canvasId);
-    renderer = temp;
-  }
+  // V-05-R2：活跃/非活跃一视同仁，统一离屏渲染，不再读正式 canvas
+  const size = getCanvasRenderSize(canvasId);
+  const renderer = ensureShotRenderer(size.w, size.h);
   if (!renderer) return null;
 
   try {
@@ -874,9 +936,25 @@ function captureScreenshot(canvasId) {
   } catch (err) {
     console.warn(`[captureScreenshot] render fail ${canvasId}:`, err);
     return null;
-  } finally {
-    if (temp) disposeTempRenderer(temp);
   }
+}
+
+/**
+ * V-05-R2：读取指定箱当前 drawing buffer 尺寸（无活跃 renderer 时回退容器尺寸）。
+ * 用于离屏截图保持与屏幕画面一致的分辨率。
+ */
+function getCanvasRenderSize(canvasId) {
+  const r = renderers[canvasId];
+  if (r) {
+    try {
+      const s = r.getSize(new THREE.Vector2());
+      return { w: Math.max(1, Math.round(s.x)), h: Math.max(1, Math.round(s.y)) };
+    } catch (e) { /* fallthrough */ }
+  }
+  const canvas = document.getElementById(canvasId);
+  const w = (canvas && canvas.clientWidth) || (parentEl ? parentEl.clientWidth : 0) || 800;
+  const h = (canvas && canvas.clientHeight) || (parentEl ? parentEl.clientHeight : 0) || 600;
+  return { w, h };
 }
 
 function captureScreenshotFixed(canvasId, targetWidth = 800, targetHeight = 600) {
@@ -884,48 +962,24 @@ function captureScreenshotFixed(canvasId, targetWidth = 800, targetHeight = 600)
   const camera = cameras[canvasId];
   if (!scene || !camera) return null;
 
-  const renderer = renderers[canvasId];
-  if (renderer) {
-    const originalSize = renderer.getSize(new THREE.Vector2());
-    const originalAspect = camera.aspect;
-
-    renderer.setSize(targetWidth, targetHeight, false);
-    camera.aspect = targetWidth / targetHeight;
-    camera.updateProjectionMatrix();
-
-    let dataUrl = null;
-    try {
-      renderer.render(scene, camera);
-      dataUrl = renderer.domElement.toDataURL('image/png');
-    } catch (err) {
-      console.warn(`[captureScreenshotFixed] render fail ${canvasId}:`, err);
-    }
-
-    renderer.setSize(originalSize.x, originalSize.y, false);
-    camera.aspect = originalAspect;
-    camera.updateProjectionMatrix();
-    if (scene && camera) {
-      try { renderer.render(scene, camera); } catch (err) { /* ignore */ }
-    }
-    return dataUrl;
-  }
-
-  // V-01 修复：无活跃 renderer（懒创建模式）→ 临时创建、截图、即销毁
-  const temp = createTempRenderer(canvasId, targetWidth, targetHeight);
-  if (!temp) return null;
+  // V-05-R2 重写：原实现对非活跃箱在正式 canvas 上建临时 renderer（context 泄漏源），
+  // 对活跃箱临时改尺寸渲染再恢复（多一次全场景重绘）。
+  // 统一改为：离屏共享渲染器 + 相机纵横比临时调整后恢复。零 context 新增、零正式 canvas 触碰。
   const originalAspect = camera.aspect;
+  const renderer = ensureShotRenderer(targetWidth, targetHeight);
+  if (!renderer) return null;
+
   try {
     camera.aspect = targetWidth / targetHeight;
     camera.updateProjectionMatrix();
-    temp.render(scene, camera);
-    return temp.domElement.toDataURL('image/png');
+    renderer.render(scene, camera);
+    return renderer.domElement.toDataURL('image/png');
   } catch (err) {
     console.warn(`[captureScreenshotFixed] render fail ${canvasId}:`, err);
     return null;
   } finally {
     camera.aspect = originalAspect;
     camera.updateProjectionMatrix();
-    disposeTempRenderer(temp);
   }
 }
 

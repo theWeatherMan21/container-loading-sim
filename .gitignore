@@ -46,3 +46,8 @@ debug-*.md
 
 # Planning artifacts
 docs/superpowers/plans/
+
+# Local test/QA artifacts (not part of the source tree)
+.playwright-cli/
+acceptance-r4-dist/
+python-legacy/
