@@ -20,7 +20,8 @@ const assertSuites = [
   'diagnose-ems-fragmentation.js',    // EMS 碎片
   'test-regressions-r4.js',            // R4 轮 22 项修复回归固化（F-01..P-01）
   'test-regressions-p2.js',            // P2 轮 10 项修复回归固化（D-02/D-03/C-NEW-3/F-04/F-05/F-06/C-02/C-04/APP-1..3）
-  'test-regressions-v05.js'            // V-05 修复回归固化（3D 多箱切换空白：disposeRenderer 不杀 context + 自愈兜底）
+  'test-regressions-v05.js',            // V-05 修复回归固化（3D 多箱切换空白：disposeRenderer 不杀 context + 自愈兜底）
+  'test-regressions-a1.js'             // A1 轮回归固化（A 方向单箱型尾货提示层静态契约：A-TAIL-1..5）
 ];
 
 // 报告类套件：输出量大，仅检查退出码

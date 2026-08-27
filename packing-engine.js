@@ -1004,6 +1004,113 @@ const PackingEngine = (() => {
     return capacity > CONSTANTS.EPS ? packed / capacity : 0;
   }
 
+  /**
+   * 尾组级联合并（装箱后处理 pass）：
+   * 将装箱序列中「跨箱型分段」末端的碎片尾箱两两重装合一。典型场景：
+   * [..., 20GP 满×N][..., 20GP 尾6件][45HQ, 45HQ][20GP 尾10件] 中，
+   * 两个被大块装载隔断的低利用率尾箱（6件+10件）本可并成一箱。
+   *
+   * 候选判定采用结构化 run 扫描：把 containers 按「连续同 containerCode」切段，
+   * 每段末箱即为候选（正是被整段同型装载隔断的碎片位置）；
+   * 配对失败则原样返回，天然无害。
+   *
+   * 正确性三支柱：
+   * 1. 账目不变性 —— 只有当重装结果「全量装净」（placed 数等于输入数且 unplaced 为空）
+   *    才接受合并；已装件数/体积/重量在搬运中严格守恒，调用方既有账目 throw 不受影响；
+   * 2. 规格回填 —— 合并箱写回 spec 的 containerCode/name 与真实 containerVolume，
+   *    保证 selfCheck 按 containerCode 匹配规格、weightedAvgUtilization 容量加权正确；
+   * 3. 旋转还原 —— 重装前用 origL/origW/origH 还原原始尺寸（X-01 同款模式），
+   *    规避旋转后就地改写的 l/w/h 干扰装载器排序与层铺判断。
+   *
+   * @param {Array} containers - 待处理的集装箱对象数组（原地修改）
+   * @param {Array} specs - 可用白名单箱型规格（合并目标仅限其中）
+   * @param {object} options - { tolerance, sortStrategy, mergedTags }
+   *   mergedTags 会原样展开到新造的合并箱上（由调用方传入路径语义标记）
+   * @returns {{ changed: boolean }} 是否发生过合并
+   */
+  function mergeTailContainers(containers, specs, options = {}) {
+    if (!Array.isArray(containers) || containers.length < 2) return { changed: false };
+    if (!Array.isArray(specs)) return { changed: false };
+
+    // 白名单箱型去重 + 容积升序：优先用最小容积箱装净，避免浪费大箱
+    const uniqueSpecs = [];
+    const seenCodes = new Set();
+    for (const spec of specs) {
+      if (spec && spec.code && !seenCodes.has(spec.code)) {
+        seenCodes.add(spec.code);
+        uniqueSpecs.push(spec);
+      }
+    }
+    uniqueSpecs.sort((a, b) => (a.L * a.W * a.H) - (b.L * b.W * b.H));
+    if (uniqueSpecs.length === 0) return { changed: false };
+
+    const MAX_MERGE_ROUNDS = 10; // 链式重试上限；每次成功合并净减一箱，必然早于上限终止
+    const packOptions = {
+      tolerance: typeof options.tolerance === 'number' ? options.tolerance : 0.05,
+      sortStrategy: options.sortStrategy
+    };
+
+    // 还原原始规格快照（placedItems 的 l/w/h 是旋转后就地改写值）
+    const restoreItem = (it) => ({
+      ...it,
+      l: it.origL != null ? it.origL : it.l,
+      w: it.origW != null ? it.origW : it.w,
+      h: it.origH != null ? it.origH : it.h
+    });
+
+    let changed = false;
+    for (let round = 0; round < MAX_MERGE_ROUNDS; round++) {
+      // run 切段：收集每段末箱的下标
+      const tails = [];
+      let i = 0;
+      while (i < containers.length) {
+        let j = i;
+        while (j + 1 < containers.length && containers[j + 1].containerCode === containers[i].containerCode) j++;
+        tails.push(j);
+        i = j + 1;
+      }
+      if (tails.length < 2) break; // 仅剩单一箱型段，无隔断碎片
+
+      // 两两配对尝试：任一对找到「能全量装净」的目标箱型即接受，随后链式进入下一轮
+      let accepted = false;
+      for (let a = 0; a < tails.length - 1 && !accepted; a++) {
+        for (let b = a + 1; b < tails.length; b++) {
+          const cA = containers[tails[a]];
+          const cB = containers[tails[b]];
+          if (!(cA && Array.isArray(cA.placedItems) && cA.placedItems.length > 0)) continue;
+          if (!(cB && Array.isArray(cB.placedItems) && cB.placedItems.length > 0)) continue;
+
+          const combined = [
+            ...cA.placedItems.map(restoreItem),
+            ...cB.placedItems.map(restoreItem)
+          ];
+          for (const spec of uniqueSpecs) {
+            const repack = packSingleContainer(combined, spec, packOptions);
+            // 接受条件：全量装净 —— 绝不制造新的未装件
+            if (repack.placedItems.length === combined.length &&
+                Array.isArray(repack.unplacedItems) && repack.unplacedItems.length === 0) {
+              const dropIdx = new Set([tails[a], tails[b]]);
+              const survivors = containers.filter((_, idx) => !dropIdx.has(idx));
+              survivors.push({
+                ...repack,
+                containerCode: spec.code,
+                containerName: spec.nameCN || spec.name || '未知箱型',
+                ...(options.mergedTags || {})
+              });
+              containers.splice(0, containers.length, ...survivors);
+              accepted = true;
+              changed = true;
+              break;
+            }
+          }
+          if (accepted) break;
+        }
+      }
+      if (!accepted) break; // 本轮无成功配对，链式收敛结束
+    }
+    return { changed };
+  }
+
   function multiContainerPackOnce(allItems, containerSpec, options = {}) {
     const containers = [];
     const totalInputItems = getTotalQuantity(allItems);
@@ -1024,6 +1131,17 @@ const PackingEngine = (() => {
     const nonEmptyContainers = containers.filter(c => c.placedItems.length > 0);
     const emptyCount = containers.length - nonEmptyContainers.length;
     if (emptyCount > 0) containers.splice(0, containers.length, ...nonEmptyContainers);
+
+    // 尾组级联合并 pass（B 方向 · 装载后处理统一接入点）。
+    // 同箱型路径下所有箱共享同一 containerCode，run 切段恒为单段、候选数 < 2，
+    // 合并天然不触发（防御性空转）；保留接入点保证三条装载管线的
+    // 后处理语义一致。合并在汇总 reduce 与账目校验之前执行，
+    // 且「全量装净」约束保证已装数不变，此处账目无需回填。
+    mergeTailContainers(containers, [containerSpec], {
+      tolerance: options.tolerance,
+      sortStrategy: options.sortStrategy,
+      mergedTags: { isInterim: true }
+    });
 
     // 汇总
     const totalPlaced = containers.reduce((s, c) => s + c.placedItems.length, 0);
@@ -1437,6 +1555,15 @@ const PackingEngine = (() => {
         }
       }
     }
+
+    // 尾组级联合并 pass（B 方向 · 混合路径接入点）：
+    // 主循环 + 动态扩容兜底完成后，将「连续同箱型段」末端的碎片尾箱两两合一。
+    // 「全量装净」约束保证已装件数/体积/重量在搬运中严格守恒，
+    // 上方增量累计器（totalPlaced 等）无需回填；排序策略与扩容兜底保持一致。
+    mergeTailContainers(containers, containerSpecs, {
+      tolerance: options.tolerance,
+      sortStrategy: useStackableFirst ? 'stackable-first' : options.sortStrategy
+    });
 
     // 过滤空箱（未装入任何货物的箱型）
     const nonEmptyContainers = containers.filter(c => c.placedItems.length > 0);
@@ -2144,6 +2271,17 @@ const PackingEngine = (() => {
           }
         }
       }
+
+      // 尾组级联合并 pass（B 方向 · Planner 分支接入点）：
+      // 分组装载 + 扩容兜底完成后，对「连续同箱型段」末端的碎片尾箱做两两合一。
+      // 「全量装净」约束保证已装件数守恒，allUnplaced 与 accountedUnplaced 的
+      // 差值校验（及后续 throw）不受影响；合并箱回填 spec 编码/名称，
+      // availableByCode 反查 maxPayload 与 selfCheck 匹配均保持正确。
+      mergeTailContainers(containers, mixedContainers, {
+        tolerance,
+        sortStrategy: 'smart',
+        mergedTags: { plannerReason: '尾组合并' }
+      });
 
       const totalPlaced = containers.reduce((s, c) => s + c.placedItems.length, 0);
       const inputTotal = getTotalQuantity(items);

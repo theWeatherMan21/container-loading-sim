@@ -599,6 +599,32 @@ select option {
   color: var(--text-secondary);
   line-height: 1.55;
 }
+/* A 方向尾货建议条：文案 + 跳转按钮并排，亮暗双模式适配 */
+.result-summary__note--action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: color-mix(in srgb, var(--accent) 10%, var(--card));
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.result-summary__switch {
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--card);
+  background: var(--accent);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: filter var(--dur-fast, 150ms) ease-out;
+}
+.result-summary__switch:hover { filter: brightness(1.1); }
+.result-summary__switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.result-summary__switch:active { filter: brightness(0.92); }
 
 /* Container tab buttons (rendered by app.js) — P0-B 迷你分数卡 */
 .container-tabs__row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: var(--space-3); }

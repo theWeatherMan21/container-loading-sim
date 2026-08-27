@@ -13,6 +13,9 @@
   const FP = window.FieldParser;
   const CDB = window.ContainerDB;
   const PE = window.PackingEngine;
+  // A 方向：单箱型尾货低利用率阈值（百分数口径，与 lastUtilPct 同单位）——
+  // 末箱体积利用率低于该百分比视为「小体积尾货残留」，触发混合装箱建议
+  const TAIL_LOW_UTIL_THRESHOLD_PCT = 35;
   // ThreeViewer 是 ES module，可能尚未加载，使用轮询获取
   function getTV() { return window.ThreeViewer; }
   const PDFX = window.PdfExporter;
@@ -1917,6 +1920,35 @@
           推荐${recommendedBoxes}箱基于体积估算（×1.3 余量），实际 EMS 算法仅需 ${actualBoxes} 箱即可装完所有货物。未使用的箱型：${skippedInfo}
         </div>
       `);
+    }
+
+    // A 方向（单箱型尾货建议）：仅手动单箱型路径触发——引擎不允许跨箱型回退，
+    // 尾货只能表现为「有件未装入」或「末箱低利用率」。检测到即引导去 Step3 开启混合装箱。
+    const isSingleBoxPath = !state.useMixed && !!state.containerSpec && !state.containerSpecs;
+    if (isSingleBoxPath) {
+      const containers = result.containers || [];
+      const lastC = containers[containers.length - 1];
+      const lastUtilPct = lastC && typeof lastC.utilization === 'number'
+        ? Math.round(lastC.utilization * 100)
+        : null;
+      const tailLowUtil = containers.length >= 2 && lastUtilPct !== null && lastUtilPct < TAIL_LOW_UTIL_THRESHOLD_PCT;
+      const specCode = state.containerSpec.code || '';
+
+      if ((result.unplacedCount || 0) > 0) {
+        el.insertAdjacentHTML('beforeend', `
+          <div class="result-summary__note result-summary__note--action">
+            <span>📦 当前箱型 <strong>${specCode}</strong> 尚有 <strong>${result.unplacedCount} 件</strong>货物未能装入${lastUtilPct !== null ? `，末箱利用率 ${lastUtilPct}%` : ''}——单一箱型无法覆盖剩余尾货。</span>
+            <button type="button" class="result-summary__switch" onclick="App.goToStep(3)">🔄 返回第 3 步 · 启用混合装箱</button>
+          </div>
+        `);
+      } else if (tailLowUtil) {
+        el.insertAdjacentHTML('beforeend', `
+          <div class="result-summary__note result-summary__note--action">
+            <span>💡 末箱利用率仅 <strong>${lastUtilPct}%</strong>，属于小体积尾货残留。改用多种箱型组合（大箱装主货、小箱收尾货）通常可减少总箱数。</span>
+            <button type="button" class="result-summary__switch" onclick="App.goToStep(3)">🔄 返回第 3 步 · 启用混合装箱</button>
+          </div>
+        `);
+      }
     }
   }
 
