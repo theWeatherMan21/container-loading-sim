@@ -139,8 +139,8 @@ body {
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color 0.55s cubic-bezier(0.4, 0, 0.2, 1),
-              color 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background-color var(--dur-slow) var(--ease-out),
+              color var(--dur-slow) var(--ease-out);
 }
 
 /* ── 3. Header ── */
@@ -151,7 +151,7 @@ body {
   background: color-mix(in srgb, var(--card) 92%, transparent);
   border-bottom: 1px solid var(--border);
   padding: 13px 24px;
-  transition: background 0.3s ease, border-color 0.3s ease;
+  transition: background var(--dur-slow) var(--ease-out), border-color var(--dur-slow) var(--ease-out);
 }
 
 .header__inner {
@@ -178,7 +178,7 @@ body {
 .status-divider { height: 14px; width: 1px; background: var(--border-strong); }
 
 .theme-switcher { display: inline-flex; align-items: center; gap: 4px; padding: 3px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-.theme-btn { width: 38px; height: 38px; border-radius: var(--radius-sm); border: none; background: transparent; color: var(--text-secondary); cursor: pointer; display: grid; place-items: center; transition: color 0.2s ease, background 0.2s ease; }
+.theme-btn { width: 38px; height: 38px; border-radius: var(--radius-sm); border: none; background: transparent; color: var(--text-secondary); cursor: pointer; display: grid; place-items: center; transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out); }
 .theme-btn svg { width: 17px; height: 17px; stroke-width: 1.8; }
 .theme-btn:hover { color: var(--text); background: var(--card); }
 .theme-btn.active { background: var(--card); color: var(--accent); box-shadow: var(--shadow-sm); }
@@ -233,7 +233,7 @@ body {
   box-shadow: var(--shadow-sm);
   margin-bottom: 14px;
   border: 1px solid var(--border);
-  transition: box-shadow 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+  transition: box-shadow var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out), background var(--dur-slow) var(--ease-out);
   animation: fadeInUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
@@ -247,7 +247,7 @@ body {
   padding: 48px 40px;
   text-align: center;
   border-radius: var(--radius-lg);
-  transition: background 0.3s ease, border-color 0.3s ease, transform 0.3s ease;
+  transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out);
   cursor: pointer;
   background: color-mix(in srgb, var(--bg-secondary) 40%, transparent);
 }
@@ -273,7 +273,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: border-color 0.3s ease, transform 0.4s ease;
+  transition: border-color var(--dur-fast) var(--ease-out), transform var(--dur-base) var(--ease-spring);
   background: var(--card);
 }
 
@@ -324,7 +324,7 @@ body {
   letter-spacing: 0.04em;
   color: var(--text-secondary);
   border-bottom: 1px solid var(--border);
-  transition: background 0.4s ease, border-color 0.4s ease;
+  transition: background var(--dur-slow) var(--ease-out), border-color var(--dur-slow) var(--ease-out);
 }
 
 .table td {
@@ -332,7 +332,7 @@ body {
   border-bottom: 1px solid var(--border);
   font-size: 13px;
   color: var(--text);
-  transition: border-color 0.4s ease;
+  transition: border-color var(--dur-slow) var(--ease-out);
 }
 
 .table tbody tr:hover {
@@ -356,7 +356,7 @@ textarea {
   font-family: inherit;
   background: var(--card);
   color: var(--text);
-  transition: border-color 0.25s ease, box-shadow 0.25s ease, background 0.4s ease;
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background var(--dur-slow) var(--ease-out);
   outline: none;
   width: 100%;
 }
@@ -402,11 +402,11 @@ select option {
   border: 1px solid transparent;
   cursor: pointer;
   overflow: hidden;
-  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
-              box-shadow 0.3s ease,
-              background 0.35s ease,
-              color 0.35s ease,
-              border-color 0.35s ease;
+  transition: transform var(--dur-base) var(--ease-spring),
+              box-shadow var(--dur-base) var(--ease-out),
+              background var(--dur-base) var(--ease-out),
+              color var(--dur-base) var(--ease-out),
+              border-color var(--dur-base) var(--ease-out);
   user-select: none;
 }
 
@@ -419,7 +419,7 @@ select option {
   inset: 0;
   background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(255,255,255,0.25) 0%, transparent 55%);
   opacity: 0;
-  transition: opacity 0.35s ease;
+  transition: opacity var(--dur-base) var(--ease-out);
   pointer-events: none;
 }
 
@@ -521,7 +521,7 @@ select option {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), var(--m-sage));
   border-radius: var(--radius-sm);
-  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width var(--dur-slow) var(--ease-out);
   width: 0%;
 }
 
@@ -643,6 +643,16 @@ select option {
 .ctab__bar--wt i { background: var(--util-wt); }
 .ctab__meta { font-size: 10.5px; color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
+/* 箱 tab stagger 入场：--i 由 app.js 注入（renderContainerTabs），60ms 步进 */
+@keyframes ctab-enter {
+  from { opacity: 0; transform: translateY(6px); }
+}
+.container-tab-btn { animation: ctab-enter var(--dur-slow) var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 60ms); }
+/* 全局 reduced-motion 规则只压 duration，不覆盖 delay —— 此处须显式关闭入场动画 */
+@media (prefers-reduced-motion: reduce) {
+  .container-tab-btn { animation: none; }
+}
+
 /* P0-B 复合摘要卡（箱详情头部）*/
 .score-card {
   display: grid;
@@ -733,7 +743,7 @@ select option {
   background: var(--card);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.25s ease;
+  transition: all var(--dur-base) var(--ease-out);
   font-family: inherit;
   line-height: 1.4;
 }
@@ -769,7 +779,7 @@ select option {
   gap: 10px;
   border: 1px solid var(--border);
   background: var(--card);
-  transition: background 0.4s ease, border-color 0.4s ease;
+  transition: background var(--dur-slow) var(--ease-out), border-color var(--dur-slow) var(--ease-out);
 }
 
 .alert-error {
@@ -843,7 +853,7 @@ input[type='checkbox'] {
   cursor: pointer;
   position: relative;
   flex-shrink: 0;
-  transition: all 0.2s ease;
+  transition: all var(--dur-fast) var(--ease-out);
   margin: 0;
   padding: 0;
 }
@@ -1026,7 +1036,7 @@ input[type='checkbox']:hover {
   background: var(--card);
   color: var(--text);
   font-size: 14px;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
 
 .manual-entry__field input:focus {
@@ -1069,7 +1079,7 @@ input[type='checkbox']:hover {
   color: var(--danger);
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 
 .manual-entry__item button:hover {
@@ -1100,7 +1110,7 @@ input[type='checkbox']:hover {
   letter-spacing: 0.02em;
   user-select: none;
   opacity: 0.75;
-  transition: opacity 0.25s ease;
+  transition: opacity var(--dur-base) var(--ease-out);
 }
 
 

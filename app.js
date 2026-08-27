@@ -1932,7 +1932,7 @@
       const isFR = c.containerCode && c.containerCode.includes('FR');
       const volPct = Math.min(100, (isFR && c.spaceEfficiency != null ? c.spaceEfficiency : (c.utilization || 0)) * 100);
       const wtPct = Math.min(100, (c.weightUtil || 0) * 100);
-      html += `<button type="button" role="tab" aria-selected="${i === 0}" class="container-tab-btn${active}" data-index="${i}">
+      html += `<button type="button" role="tab" aria-selected="${i === 0}" class="container-tab-btn${active}" data-index="${i}" style="--i:${i}">
         <span class="ctab__no">箱 ${i + 1}</span>
         <span class="ctab__bars">
           <span class="ctab__bar"><i style="width:${volPct.toFixed(1)}%"></i></span>
