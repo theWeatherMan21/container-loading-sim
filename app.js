@@ -2525,13 +2525,215 @@
     document.querySelectorAll('.btn-primary, .btn-secondary, .btn-export, .btn-ghost, .theme-btn, .container-tabs__btn').forEach(applyButtonRipple);
   }
 
+  // ═══════════════════════════════════════════
+  // Command Palette (P1-C · ⌘K) — 键盘优先命令面板
+  // 设计卡：「⌘K 命令面板 · 设计卡 v2（2026-08-27）」§一~五
+  // 权限对齐导航铁律；主题执行复用 .theme-btn click 作单一事实源。
+  // ═══════════════════════════════════════════
+  function initCommandPalette() {
+    if ($('cmdk-root')) return; // 幂等：重复调用不重建
+
+    const isMac = /mac/i.test(navigator.platform || navigator.userAgent);
+    const iconSvg = (inner) => '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>';
+    const ICONS = {
+      nav: iconSvg('<path d="M5 12h14"/><path d="M13 6l6 6-6 6"/>'),
+      calc: iconSvg('<path d="M8 5l11 7-11 7V5z"/>'),
+      export: iconSvg('<path d="M12 3v10"/><path d="M8 9l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>'),
+      sun: iconSvg('<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>'),
+      moon: iconSvg('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'),
+      contrast: iconSvg('<circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 0 20V2z"/>')
+    };
+    // 权限谓词：与侧栏导航铁律一致（showStep 前的可达性判断）
+    const stepEnabled = (n) => n <= state.currentStep ||
+      ((n === 2 || n === 3) && state.items.length > 0) ||
+      (n === 4 && !!state.packingResult);
+
+    const COMMANDS = [
+      { id: 'nav-1', group: '导航', label: '第 1 步 · 导入货物', hint: '1', icon: ICONS.nav, enabled: () => stepEnabled(1), run: () => showStep(1) },
+      { id: 'nav-2', group: '导航', label: '第 2 步 · 确认数据', hint: '2', icon: ICONS.nav, enabled: () => stepEnabled(2), run: () => showStep(2) },
+      { id: 'nav-3', group: '导航', label: '第 3 步 · 装箱配置', hint: '3', icon: ICONS.nav, enabled: () => stepEnabled(3), run: () => showStep(3) },
+      { id: 'nav-4', group: '导航', label: '第 4 步 · 结果检查', hint: '4', icon: ICONS.nav, enabled: () => stepEnabled(4), run: () => showStep(4) },
+      { id: 'calc', group: '操作', label: '开始计算（当前步）', hint: 'C', icon: ICONS.calc, enabled: () => state.currentStep === 3, run: () => { const b = $('btn-calculate'); if (b) b.click(); } },
+      { id: 'export-pdf', group: '操作', label: '导出 PDF 报告', hint: 'E', icon: ICONS.export, enabled: () => !!state.packingResult, run: () => { const b = $('btn-export-pdf'); if (b) b.click(); } },
+      { id: 'theme-light', group: '外观', label: '切换至亮色主题', hint: '', icon: ICONS.sun, enabled: () => true, run: () => clickThemeBtn('light') },
+      { id: 'theme-dark', group: '外观', label: '切换至暗色主题', hint: '', icon: ICONS.moon, enabled: () => true, run: () => clickThemeBtn('dark') },
+      { id: 'theme-hc', group: '外观', label: '切换至高对比主题', hint: '', icon: ICONS.contrast, enabled: () => true, run: () => clickThemeBtn('contrast') }
+    ];
+    // 主题单一事实源：程序化点击现有 .theme-btn，initThemeSwitcher 的 handler
+    // 一并完成 localStorage 与 active 态同步，绝不手写第二份逻辑。
+    function clickThemeBtn(t) {
+      const b = document.querySelector('.theme-btn[data-theme="' + t + '"]');
+      if (b) b.click();
+    }
+    // 全局 T：循环切换主题（读当前 active 的下一个）
+    function cycleTheme() {
+      const active = document.querySelector('.theme-btn.active');
+      const cur = active ? active.dataset.theme : (document.documentElement.getAttribute('data-theme') || 'light');
+      const order = ['light', 'dark', 'contrast'];
+      const idx = order.indexOf(cur);
+      clickThemeBtn(order[(idx >= 0 ? idx : 0) + 1] || 'light');
+    }
+
+    // ── 构建浮层 DOM（一次）──
+    const root = document.createElement('div');
+    root.id = 'cmdk-root';
+    root.className = 'cmdk-overlay cmdk-hidden';
+    root.innerHTML =
+      '<div class="cmdk-panel" role="dialog" aria-modal="true" aria-label="命令面板">' +
+        '<div class="cmdk-head">' +
+          iconSvg('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/>').replace('<svg ', '<svg class="cmdk-search-icon" ') +
+          '<input id="cmdk-input" class="cmdk-input" type="text" placeholder="搜索命令…" autocomplete="off" spellcheck="false" aria-label="搜索命令"/>' +
+          '<span class="cmdk-chip"><kbd>' + (isMac ? '⌘K' : 'Ctrl K') + '</kbd></span>' +
+        '</div>' +
+        '<div id="cmdk-list" class="cmdk-list" role="listbox" aria-label="命令列表"></div>' +
+        '<div class="cmdk-foot"><span>↑↓ 选择</span><i>·</i><span>↵ 执行</span><i>·</i><span>Esc 关闭</span></div>' +
+      '</div>';
+    document.body.appendChild(root);
+
+    const panel = root.querySelector('.cmdk-panel');
+    const inputEl = root.querySelector('#cmdk-input');
+    const listEl = root.querySelector('#cmdk-list');
+    let isOpen = false;
+    let filtered = [];
+    let selected = 0;
+
+    function currentFiltered() {
+      const q = inputEl.value.trim().toLowerCase();
+      if (!q) return COMMANDS.slice();
+      return COMMANDS.filter(c => c.label.toLowerCase().includes(q));
+    }
+
+    function render() {
+      filtered = currentFiltered();
+      if (selected >= filtered.length) selected = Math.max(0, filtered.length - 1);
+      const byGroup = {};
+      filtered.forEach((c, i) => { (byGroup[c.group] = byGroup[c.group] || []).push([c, i]); });
+      let html = '';
+      ['导航', '操作', '外观'].forEach(g => {
+        const rows = byGroup[g];
+        if (!rows || !rows.length) return;
+        html += '<div class="cmdk-group-title" role="presentation">' + g + '</div>';
+        rows.forEach(([c, i]) => {
+          html += '<div class="cmdk-item' + (i === selected ? ' cmdk-item--active' : '') + '" role="option"' +
+            ' aria-selected="' + (i === selected) + '"' +
+            (c.enabled() ? '' : ' aria-disabled="true" data-disabled="1"') +
+            ' data-idx="' + i + '">' +
+            '<span class="cmdk-icon" aria-hidden="true">' + c.icon + '</span>' +
+            '<span class="cmdk-label">' + c.label + '</span>' +
+            (c.hint ? '<span class="cmdk-hint"><kbd>' + c.hint + '</kbd></span>' : '') +
+          '</div>';
+        });
+      });
+      listEl.innerHTML = html || '<div class="cmdk-empty">未找到匹配命令</div>';
+    }
+
+    // 仅切高亮类与 aria，不重渲染，保持滚动位置
+    function paintActive() {
+      listEl.querySelectorAll('.cmdk-item').forEach(el => {
+        const i = parseInt(el.dataset.idx, 10);
+        el.classList.toggle('cmdk-item--active', i === selected);
+        el.setAttribute('aria-selected', String(i === selected));
+      });
+      const act = listEl.querySelector('.cmdk-item--active');
+      if (act && act.scrollIntoView) act.scrollIntoView({ block: 'nearest' });
+    }
+
+    function openPalette() {
+      if (isOpen) return;
+      isOpen = true;
+      root.classList.remove('cmdk-hidden');
+      // 重启入场动画（同 showStep 的重排技巧；reduced-motion 下由局部规则关闭）
+      panel.style.animation = 'none'; void panel.offsetWidth; panel.style.animation = '';
+      inputEl.value = '';
+      selected = 0;
+      render();
+      requestAnimationFrame(() => inputEl.focus());
+    }
+    function closePalette() {
+      if (!isOpen) return;
+      isOpen = false;
+      root.classList.add('cmdk-hidden');
+      if (inputEl.blur) inputEl.blur();
+    }
+    function togglePalette() { isOpen ? closePalette() : openPalette(); }
+
+    function executeIndex(i) {
+      const c = filtered[i];
+      if (!c || !c.enabled()) return; // 禁用命令：Enter 无动作（视觉已降透明度）
+      closePalette();
+      c.run();
+    }
+
+    // 输入过滤：匹配集变化即重置高亮为 0（设计卡 §一）
+    inputEl.addEventListener('input', () => { selected = 0; render(); });
+
+    listEl.addEventListener('mousemove', (e) => {
+      const it = e.target.closest ? e.target.closest('.cmdk-item') : null;
+      if (!it) return;
+      const i = parseInt(it.dataset.idx, 10);
+      if (i !== selected) { selected = i; paintActive(); }
+    });
+    listEl.addEventListener('mousedown', (e) => e.preventDefault());
+    listEl.addEventListener('click', (e) => {
+      const it = e.target.closest ? e.target.closest('.cmdk-item') : null;
+      if (!it) return;
+      executeIndex(parseInt(it.dataset.idx, 10));
+    });
+    // 点遮罩空白处关闭（点面板内部不关）
+    root.addEventListener('mousedown', (e) => { if (e.target === root) closePalette(); });
+
+    // ── 全局键盘调度 ──
+    document.addEventListener('keydown', (e) => {
+      // IME 组合期防护（中文输入法确认候选时忽略）
+      if (e.isComposing || e.keyCode === 229) return;
+      // ⌘K / Ctrl+K：任意时刻开关面板
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        togglePalette();
+        return;
+      }
+      if (!isOpen) return;
+      if (e.key === 'Escape') { e.preventDefault(); closePalette(); return; }
+      if (e.key === 'Tab') { e.preventDefault(); return; } // 焦点固定在输入框
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (filtered.length) { selected = (selected + 1) % filtered.length; paintActive(); }
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (filtered.length) { selected = (selected - 1 + filtered.length) % filtered.length; paintActive(); }
+        return;
+      }
+      if (e.key === 'Enter') { e.preventDefault(); executeIndex(selected); return; }
+    });
+
+    // ── 面板外全局单字符快捷键 ──
+    // 前提：面板已关（开着时焦点在搜索框，输入域豁免天然生效）、无修饰键
+    //（防 Ctrl+C 等系统快捷键误触发）、焦点不在任何可编辑元素内。
+    document.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (isOpen) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key.length !== 1) return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+      const k = e.key.toLowerCase(); // 大写防护：Ctrl+Shift 使 key 变大写
+      if (k === 't') { cycleTheme(); return; }
+      const c = COMMANDS.find(cmd => cmd.hint && cmd.hint.toLowerCase() === k);
+      if (c && c.enabled()) c.run();
+    });
+  }
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
       initThemeSwitcher();
       initButtonRipples();
+      initCommandPalette();
     });
   } else {
     initThemeSwitcher();
     initButtonRipples();
+    initCommandPalette();
   }
 })();

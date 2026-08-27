@@ -1119,3 +1119,173 @@ input[type='checkbox']:hover {
   .workspace { grid-template-columns: 1fr; }
   .steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 10px 0 2px; }
 }
+
+/* ═══════════════════════════════════════════
+   ⌘K Command Palette (P1-C)
+   设计卡 v2：层级 = overlay > panel > head/list/foot
+   全量走主题令牌（三主题自动适配），动效 150–300ms ease-out。
+   ═══════════════════════════════════════════ */
+.cmdk-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(15, 23, 32, 0.48); /* 中性深色遮罩，亮暗模式同权重 */
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  animation: cmdk-overlay-in var(--dur-fast, 150ms) var(--ease-out, ease-out);
+}
+
+.cmdk-panel {
+  margin-top: 18vh;
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(520px, calc(100vh - 36vh));
+  display: flex;
+  flex-direction: column;
+  background: var(--card, #FFFFFF);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg, 14px);
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.22),
+    0 6px 18px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35); /* 多层柔和阴影（§4.4） */
+  overflow: hidden;
+  animation: cmdk-panel-in var(--dur-base, 200ms) var(--ease-out, ease-out);
+}
+
+.cmdk-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.cmdk-search-icon { flex: none; opacity: 0.7; }
+
+.cmdk-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--text);
+}
+.cmdk-input::placeholder { color: var(--text-muted); }
+.cmdk-input:focus-visible { outline: none; }
+
+.cmdk-chip kbd,
+.cmdk-hint kbd,
+.cmdk-foot kbd {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border);
+  background: var(--bg-secondary, #E2E9EC);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.cmdk-list {
+  flex: 1;
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+
+.cmdk-group-title {
+  padding: 10px 10px 4px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.cmdk-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: var(--radius-md, 10px);
+  cursor: pointer; /* 可点击元素必须有指针 */
+  color: var(--text);
+  transition: background-color var(--dur-fast, 150ms) var(--ease-out, ease-out),
+              box-shadow var(--dur-fast, 150ms) var(--ease-out, ease-out);
+}
+
+.cmdk-item:hover:not(.cmdk-item--active) {
+  background: var(--card-hover, #F6F9FA);
+}
+
+.cmdk-item--active {
+  background: var(--card-hover, #F6F9FA);
+  box-shadow: inset 2px 0 0 var(--accent); /* 左缘 2px accent 指示条 */
+  cursor: default; /* 键盘选中态，鼠标 hover 不再抢焦点视觉 */
+}
+
+.cmdk-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+.cmdk-item--active .cmdk-icon { transform: translateX(0); }
+
+.cmdk-label { flex: 1; min-width: 0; font-size: 14px; }
+
+.cmdk-hint kbd { opacity: 0.85; }
+
+/* 禁用命令：保留列表、降透明度 + not-allowed（设计卡 §四：不隐藏） */
+.cmdk-item[data-disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cmdk-empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.cmdk-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  user-select: none;
+}
+.cmdk-foot i { font-style: normal; opacity: 0.5; }
+
+@keyframes cmdk-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes cmdk-panel-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.cmdk-hidden { display: none !important; }
+
+/* reduced-motion 局部兜底：显式清零动画（教训——全局规则只压 duration
+   不清 delay/fill-mode，这里逐项关闭确保无残余动效） */
+@media (prefers-reduced-motion: reduce) {
+  .cmdk-overlay { animation: none; }
+  .cmdk-panel { animation: none; }
+}
