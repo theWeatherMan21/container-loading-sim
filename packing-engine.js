@@ -10,7 +10,7 @@ const PackingEngine = (() => {
   if (!CDB || typeof CDB.getEffectiveMaxDims !== 'function') {
     throw new Error('ContainerDB 未加载：请确认 container-db.js 已先于 packing-engine.js 加载');
   }
-  const { CONTAINER_DB, getEffectiveMaxDims, checkDoorConstraint, getOrientations, hasValidOrientationForContainer } = CDB;
+  const { CONTAINER_DB, getEffectiveMaxDims, checkDoorConstraint, getOrientations, hasValidOrientationForContainer, TIER } = CDB;
 
   // ═══════════════════════════════════════════
   // 常量定义
@@ -32,7 +32,11 @@ const PackingEngine = (() => {
     HEAVY_NONSTACKABLE_WEIGHT: 1000,  // 重量≥此值视为重型
     HEAVY_NONSTACKABLE_MIN_DIM: 2.0,  // 最长边≥此值视为大件
     // 承重检查：下方物品总重量必须 ≥ 上方物品重量 × 此系数
-    SUPPORT_WEIGHT_RATIO: 0.5
+    SUPPORT_WEIGHT_RATIO: 0.5,
+    // 尾组合并统一准入池阈值（Q3）：双维利用（容积/载重）任一低于此值视为碎片箱可参与合并。
+    // 也是「孤儿箱」修复语义的关键：扩容兜底 max-placed 策略可能在段中间造出低利用零散箱，
+    // 纯 run 段尾判定会漏掉它们，该门控负责捕获。
+    TAIL_MAX_UTIL: 0.35
   };
 
   const SUPPORT_MIN_RATIO = 0.70; // 底面最小支撑覆盖率
@@ -1032,7 +1036,9 @@ const PackingEngine = (() => {
     if (!Array.isArray(containers) || containers.length < 2) return { changed: false };
     if (!Array.isArray(specs)) return { changed: false };
 
-    // 白名单箱型去重 + 容积升序：优先用最小容积箱装净，避免浪费大箱
+    // 白名单箱型去重 + tier 分级 → 容积升序：优先用最小容积箱装净，避免浪费大箱；
+    // Q2 分级门控——普通干货箱（standard）永远先于特种箱（openTop→flatRack）作为合并目标，
+    // 特种柜只收编普通货碎片，绝不让普通货合并进特种箱（运费成本倒挂）。
     const uniqueSpecs = [];
     const seenCodes = new Set();
     for (const spec of specs) {
@@ -1041,7 +1047,10 @@ const PackingEngine = (() => {
         uniqueSpecs.push(spec);
       }
     }
-    uniqueSpecs.sort((a, b) => (a.L * a.W * a.H) - (b.L * b.W * b.H));
+    uniqueSpecs.sort((a, b) =>
+      ((TIER[a.type] ?? 99) - (TIER[b.type] ?? 99)) ||
+      ((a.L * a.W * a.H) - (b.L * b.W * b.H))
+    );
     if (uniqueSpecs.length === 0) return { changed: false };
 
     const MAX_MERGE_ROUNDS = 10; // 链式重试上限；每次成功合并净减一箱，必然早于上限终止
@@ -1058,6 +1067,19 @@ const PackingEngine = (() => {
       h: it.origH != null ? it.origH : it.h
     });
 
+    // Q4 两级 O(1) 预筛：试排前快拒，避免对明显装不下的组合做全量三维排布。
+    // 只做总量级检查（体积×1.05 宽限 + 毛重），不做单件 fit 预检。
+    const precheckFeasible = (combined, spec) => {
+      let totalVolume = 0;
+      let totalWeight = 0;
+      for (const it of combined) {
+        totalVolume += it.l * it.w * it.h;
+        totalWeight += (it.weight || 0) * (it.quantity || 1);
+      }
+      return totalVolume <= spec.L * spec.W * spec.H * 1.05 &&
+             totalWeight <= (spec.payload || Infinity);
+    };
+
     let changed = false;
     for (let round = 0; round < MAX_MERGE_ROUNDS; round++) {
       // run 切段：收集每段末箱的下标
@@ -1069,44 +1091,66 @@ const PackingEngine = (() => {
         tails.push(j);
         i = j + 1;
       }
-      if (tails.length < 2) break; // 仅剩单一箱型段，无隔断碎片
 
-      // 两两配对尝试：任一对找到「能全量装净」的目标箱型即接受，随后链式进入下一轮
-      let accepted = false;
-      for (let a = 0; a < tails.length - 1 && !accepted; a++) {
-        for (let b = a + 1; b < tails.length; b++) {
-          const cA = containers[tails[a]];
-          const cB = containers[tails[b]];
-          if (!(cA && Array.isArray(cA.placedItems) && cA.placedItems.length > 0)) continue;
-          if (!(cB && Array.isArray(cB.placedItems) && cB.placedItems.length > 0)) continue;
+      // ═══ Q3 统一准入池（孤儿箱修复核心）═══
+      // 纯「段尾」判定漏掉动态扩容在段中间造出的低利用零散箱（max-placed 兜底产物），
+      // 故准入条件放宽为二选一：
+      //   a) 是所在 run 段末箱 —— 常规尾组碎片；
+      //   b) 双维利用（容积/载重最大值）低于 TAIL_MAX_UTIL —— 孤儿箱。
+      // 「全量装净」铁律不变：接受前两源箱货量守恒搬运，不改变已装总数。
+      const pool = [];
+      for (let idx = 0; idx < containers.length; idx++) {
+        const c = containers[idx];
+        if (!(c && Array.isArray(c.placedItems) && c.placedItems.length > 0)) continue;
+        const isRunTail = tails.includes(idx);
+        const volUtil = c.utilization ?? 0;
+        const wtUtil = c.weightUtil ?? 0;
+        const isFragment = Math.max(volUtil, wtUtil) < CONSTANTS.TAIL_MAX_UTIL;
+        if (isRunTail || isFragment) pool.push(idx);
+      }
+      if (pool.length < 2) break; // 可参与合并的箱子不足两个
 
+      // ═══ Q5-B 全对扫描择优 ═══
+      // 枚举准入池内全部有序配对 × 白名单箱型，打分后取最优者执行一枚；
+      // score 越小越好：tier 主导（普通箱永远赢特种箱），同 tier 内合并后利用率越高越好。
+      // 扫描全程不写回 containers——只有找到可行方案才落一次 splice，杜绝脏状态。
+      let bestPlan = null;
+      for (let a = 0; a < pool.length; a++) {
+        for (let b = a + 1; b < pool.length; b++) {
+          const cA = containers[pool[a]];
+          const cB = containers[pool[b]];
           const combined = [
             ...cA.placedItems.map(restoreItem),
             ...cB.placedItems.map(restoreItem)
           ];
           for (const spec of uniqueSpecs) {
+            if (!precheckFeasible(combined, spec)) continue;
             const repack = packSingleContainer(combined, spec, packOptions);
             // 接受条件：全量装净 —— 绝不制造新的未装件
             if (repack.placedItems.length === combined.length &&
                 Array.isArray(repack.unplacedItems) && repack.unplacedItems.length === 0) {
-              const dropIdx = new Set([tails[a], tails[b]]);
-              const survivors = containers.filter((_, idx) => !dropIdx.has(idx));
-              survivors.push({
-                ...repack,
-                containerCode: spec.code,
-                containerName: spec.nameCN || spec.name || '未知箱型',
-                ...(options.mergedTags || {})
-              });
-              containers.splice(0, containers.length, ...survivors);
-              accepted = true;
-              changed = true;
-              break;
+              const mergedUtil = Math.max(repack.utilization ?? 0, repack.weightUtil ?? 0);
+              const score = (TIER[spec.type] ?? 99) * 100 - Math.round(mergedUtil * 100) / 100;
+              if (!bestPlan || score < bestPlan.score) {
+                bestPlan = { score, drop: [pool[a], pool[b]], repack, spec };
+              }
             }
           }
-          if (accepted) break;
         }
       }
-      if (!accepted) break; // 本轮无成功配对，链式收敛结束
+      if (!bestPlan) break; // 本轮无可行配对，链式收敛结束
+
+      // 落地唯一最优合并：剔除两源箱，合并箱 append 至末尾
+      const dropIdx = new Set(bestPlan.drop);
+      const survivors = containers.filter((_, idx) => !dropIdx.has(idx));
+      survivors.push({
+        ...bestPlan.repack,
+        containerCode: bestPlan.spec.code,
+        containerName: bestPlan.spec.nameCN || bestPlan.spec.name || '未知箱型',
+        ...(options.mergedTags || {})
+      });
+      containers.splice(0, containers.length, ...survivors);
+      changed = true;
     }
     return { changed };
   }
@@ -1469,7 +1513,8 @@ const PackingEngine = (() => {
       containers.push({
         ...result,
         containerCode: spec.code || result.containerCode || 'UNKNOWN',
-        containerName: spec.nameCN || spec.name || '未知箱型'
+        containerName: spec.nameCN || spec.name || '未知箱型',
+        isInterim: true // 本箱 unplacedItems 是移交记录（后续箱/扩容兜底继续装载），非终态错误；selfCheck 据此跳过逐箱上报，终态由 calculate() 结果级统一判定
       });
 
       if (result.placedItems.length === 0) {
@@ -1515,13 +1560,16 @@ const PackingEngine = (() => {
       const MAX_EXPAND_ROUNDS = 30; // 扩容轮次上限（防异常死循环）
       const expandOptions = { ...options };
       if (useStackableFirst) expandOptions.sortStrategy = 'stackable-first';
-      // 去重并按容积升序排列（从小到大尝试）
+      // 去重并按 tier 分级 → 容积升序排列（普通干货箱优先，特种箱按开顶→框架兜底）
       const uniqueSpecs = [];
       const seenCodes = new Set();
       for (const spec of containerSpecs) {
         if (!seenCodes.has(spec.code)) { seenCodes.add(spec.code); uniqueSpecs.push(spec); }
       }
-      uniqueSpecs.sort((a, b) => (a.L * a.W * a.H) - (b.L * b.W * b.H));
+      uniqueSpecs.sort((a, b) =>
+        ((TIER[a.type] ?? 99) - (TIER[b.type] ?? 99)) ||
+        ((a.L * a.W * a.H) - (b.L * b.W * b.H))
+      );
 
       let expanded = true;
       for (let round = 0; round < MAX_EXPAND_ROUNDS && remaining.length > 0 && expanded; round++) {
@@ -1545,7 +1593,8 @@ const PackingEngine = (() => {
             ...best.r,
             containerCode: best.spec.code || best.r.containerCode || 'UNKNOWN',
             containerName: best.spec.nameCN || best.spec.name || '未知箱型',
-            isExpand: true // 扩容箱标记
+            isExpand: true, // 扩容箱标记
+            isInterim: true // 同主循环：若本轮仍有剩余件则属移交记录；末轮扩容箱的真未装由 calculate() 结果级统一上报
           });
           totalPlaced += best.r.placedItems.length;
           totalVolumePlaced += best.r.totalVolume;
@@ -1560,9 +1609,11 @@ const PackingEngine = (() => {
     // 主循环 + 动态扩容兜底完成后，将「连续同箱型段」末端的碎片尾箱两两合一。
     // 「全量装净」约束保证已装件数/体积/重量在搬运中严格守恒，
     // 上方增量累计器（totalPlaced 等）无需回填；排序策略与扩容兜底保持一致。
+    // 合并产物同样打 isInterim：unplacedItems 属中间态记录，终态由结果级统一判定（对齐 :1187 单箱型路径样例）。
     mergeTailContainers(containers, containerSpecs, {
       tolerance: options.tolerance,
-      sortStrategy: useStackableFirst ? 'stackable-first' : options.sortStrategy
+      sortStrategy: useStackableFirst ? 'stackable-first' : options.sortStrategy,
+      mergedTags: { isInterim: true }
     });
 
     // 过滤空箱（未装入任何货物的箱型）
@@ -2235,12 +2286,16 @@ const PackingEngine = (() => {
       // 箱型选择策略：容积升序 + 全装优先（避免浪费大箱，如 40GP 能装完就不必用 45HQ）。
       if (allUnplaced.length > 0) {
         const MAX_EXPAND_ROUNDS = 30;
+        // 去重并按 tier 分级 → 容积升序排列（普通干货箱优先，特种箱按开顶→框架兜底）
         const uniqueSpecs = [];
         const seenCodes = new Set();
         for (const spec of mixedContainers) {
           if (!seenCodes.has(spec.code)) { seenCodes.add(spec.code); uniqueSpecs.push(spec); }
         }
-        uniqueSpecs.sort((a, b) => (a.L * a.W * a.H) - (b.L * b.W * b.H));
+        uniqueSpecs.sort((a, b) =>
+          ((TIER[a.type] ?? 99) - (TIER[b.type] ?? 99)) ||
+          ((a.L * a.W * a.H) - (b.L * b.W * b.H))
+        );
 
         let expanded = true;
         for (let round = 0; round < MAX_EXPAND_ROUNDS && allUnplaced.length > 0 && expanded; round++) {

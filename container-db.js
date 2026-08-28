@@ -824,10 +824,16 @@ function analyzeRecommendationFailure(items, tolerance = 0.05) {
   return reasons;
 }
 
+// 箱型分级映射（尾组合并 Q2 分级门控 · 单一来源）：
+// 数值越小越优先作为合并目标——普通干货箱在最前，特种箱按开顶→框架顺序兜底。
+// 键值与 CONTAINER_DB 中 type 字段严格对齐（'standard'|'openTop'|'flatRack'）。
+const TIER = { standard: 0, openTop: 1, flatRack: 2 };
+
 // 导出为全局
 window.ContainerDB = {
   CONTAINER_DB,
   CONTAINER_LIST,
+  TIER,
   getEffectiveMaxDims,
   checkSizeConstraints,
   checkDoorConstraint,
