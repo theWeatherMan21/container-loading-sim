@@ -614,12 +614,14 @@
       for (const sheet of result.sheets) {
         allRows.push(...sheet.data);
       }
-      // Clean merged (deduplicate consecutive rows, matching FieldParser behavior)
+      // Clean merged rows —— 2026-10-13（审阅 P0-3）：与 FieldParser 同口径，
+      // 仅删除“重复表头”行；逐字相同的数据行必须保留（防件数静默缩水）。
       const cleaned = allRows.length > 0 ? [allRows[0]] : [];
       for (let i = 1; i < allRows.length; i++) {
-        if (JSON.stringify(cleaned[cleaned.length - 1]) !== JSON.stringify(allRows[i])) {
-          cleaned.push(allRows[i]);
-        }
+        const prev = cleaned[cleaned.length - 1];
+        const curr = allRows[i];
+        if (JSON.stringify(prev) === JSON.stringify(curr) && FP.looksLikeHeader(curr)) continue;
+        cleaned.push(curr);
       }
       state.dataRows = cleaned.slice(result.headerRowIndex + 1);
 
@@ -1094,6 +1096,9 @@
   // Step 3: Packing Configuration
   // ═══════════════════════════════════════════
   function renderStep3() {
+    // 2026-10-13（审阅 P0-2/P0-4）：输入质量警示——重量缺失时载重校验不生效
+    renderWeightQualityAlert();
+
     // Tolerance input
     const tolInput = $('tolerance-input');
     if (tolInput) {
@@ -1121,6 +1126,27 @@
     if (btnCalc) {
       btnCalc.onclick = startCalculation;
     }
+  }
+
+  /**
+   * 2026-10-13（审阅 P0-2/P0-4）：重量缺失质量警示——存在 weight=0 的货物时，
+   * 载重校验不会生效。在 Step 3 常驻醒目提示（不阻断计算，但绝不静默）。
+   */
+  function renderWeightQualityAlert() {
+    const items = state.items || [];
+    const missing = items.filter(i => !(i.weight > 0));
+    if (missing.length === 0) return;
+    const missingUnits = missing.reduce((s, i) => s + (i.quantity || 1), 0);
+    const totalUnits = items.reduce((s, i) => s + (i.quantity || 1), 0);
+    const existing = document.querySelector('#weight-quality-alert');
+    if (existing) existing.remove();
+    const alert = createAlert(
+      'warning',
+      `货物重量缺失：${missing.length} 个型号（共 ${missingUnits} 件 / 全部 ${totalUnits} 件）重量为 0 —— 本次计算不会进行载重校验。请在上一页列映射中指定重量列，或人工复核载重。`,
+      '#step-3',
+      { autoDismiss: false, dismissPrevious: false }
+    );
+    if (alert) alert.id = 'weight-quality-alert';
   }
 
   function renderSkuTable() {
@@ -1262,6 +1288,8 @@
         state.containerSpec = null;
         state.selectedContainerCode = null;
       }
+      // 2026-10-13 修复（审阅 P1-2 · 死锁）：组合箱型选择变化后刷新计算按钮状态
+      ensureCalculateButton();
     }
 
     mixedBtns.forEach(btn => {
@@ -1338,6 +1366,9 @@
           <div style="font-size:13px;color:#3D3535;">内尺寸：${spec.L.toFixed(3)}×${spec.W.toFixed(3)}×${spec.H.toFixed(3)} m | 最大载重：${spec.payload} kg</div>
           <div style="font-size:12px;color:#7A706B;margin-top:4px;">已手动指定箱型，可点击"开始计算"</div>`;
         container.appendChild(info);
+        // 2026-10-13 修复（审阅 P1-2 · 死锁）：手动选箱型后刷新计算按钮状态
+        // （原实现只改 state 不刷按钮 → 推荐失败场景永远无法开算）。
+        ensureCalculateButton();
       });
       btn.addEventListener('mouseenter', function () {
         if (state.useMixed) return;
@@ -1412,10 +1443,24 @@
           manualBtns.forEach(b => { b.style.background = '#fff'; b.style.color = '#3D3535'; });
           state.containerSpec = null;
           state.selectedContainerCode = null;
-          refreshContainerRecommendation();
+          // 2026-10-13 修复（审阅 P1-2 · 死锁）：原实现此处重刷推荐 → 推荐仍失败时
+          // renderFailedRecommendation 又重置 useMixed=false + 重渲染，勾选永远生效不了。
+          // 改为就地显示组合箱型面板、等待用户点选（bindMixedPanelEvents 的 updateCount 写入 containerSpecs）。
+          const mixedBtns = mixedPanel.querySelectorAll('.mixed-container-btn');
+          mixedBtns.forEach(b => {
+            b.dataset.selected = 'false';
+            b.style.background = '#fff';
+            b.style.color = '#3D3535';
+            b.style.borderStyle = 'dashed';
+          });
+          const countEl = mixedPanel.querySelector('#mixed-selected-count');
+          if (countEl) countEl.textContent = '已选 0 种箱型';
+          state.containerSpecs = null;
+          ensureCalculateButton();
         } else {
           mixedPanel.style.display = 'none';
           state.containerSpecs = null;
+          ensureCalculateButton();
           // 取消混合时保留手动单箱型按钮，不重刷推荐（避免被重新设为混合）
         }
       });
@@ -2128,6 +2173,12 @@
           allWarnings.push(`[载重提示] 当前 ${spec.nameCN} 载重已达上限（${spec.payload.toLocaleString()} kg），如需装完请改用更大载重箱型或确认已允许多箱装载。`);
         }
       }
+    }
+
+    // 2026-10-13：输入质量注记——零重量货物使载重校验失效
+    const zeroWeightUnits = (state.items || []).filter(i => !(i.weight > 0)).reduce((s, i) => s + (i.quantity || 1), 0);
+    if (zeroWeightUnits > 0) {
+      allWarnings.push(`[输入质量] 有 ${zeroWeightUnits} 件货物重量为 0（重量列缺失），本次装载未进行载重校验，请人工复核。`);
     }
 
     // 混合装箱：提示被跳过的箱型（独立于未装载提示，因可能货物已装完但方案中多余箱型被跳过）

@@ -311,9 +311,11 @@ test('test_kitten_mixed_path_never_loses_partial_unplaced', () => {
 });
 
 test('test_kitten_mixed_fallback_reports_unplaced_error', () => {
-  // 全部货物超限（宽 12m 超所有箱宽）→ Planner 无分配 → fallback 路径。
+  // 全部货物超限 → Planner 无分配 → fallback 路径。
   // 修复前：hasErrors=false 且 checks=[]，用户看不到"装不下"提示。
-  const items = [{ l: 12.2, w: 12.0, h: 1.0, weight: 3000, quantity: 1 }];
+  // 2026-10-13 更新：FR 解除尺寸限制后，单/双维超限货可由 FR 装载（贴端+地板覆盖率≥50% 判据）；
+  // 改用「三边均超地板宽两倍」的巨型立方体（任何朝向地板覆盖率都不足 50%）确保真不可装。
+  const items = [{ l: 5, w: 5, h: 5, weight: 3000, quantity: 1 }];
   const result = PE.calculate(items, null, { tolerance: 0.05, mixedContainers: Object.values(CDB.CONTAINER_DB) });
   assert(result.unplacedCount === 1, `expected 1 unplaced, got ${result.unplacedCount}`);
   assert(result.hasErrors === true, 'fallback path must surface unplaced as error');

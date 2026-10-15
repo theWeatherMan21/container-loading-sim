@@ -80,6 +80,20 @@ const Planner = (() => {
     const assignments = [];
     const unassigned = [];
 
+    // ═══ 熔断账本（2026-10-13 修复 P0-1：Planner 无限循环 → OOM）═══
+    // 「结算当前组 → i-- 重试当前货物」模式在“建组条件过、加入条件拒”时
+    // 会以完全相同的输入反复重建同一个组（每轮泄漏一个空组，直至内存耗尽）。
+    // 修复：① 建组/加入条件同口径（新建组必能接纳首件，见下方各循环）；
+    //      ② 本账本兜底——同一件货物最多回退重试 RETRY_LIMIT 次，
+    //         超过即转入 unassigned（诚实的未分配 > 死循环）。
+    const retryCounts = new Map();
+    const bumpRetry = (it) => {
+      const n = (retryCounts.get(it) || 0) + 1;
+      retryCounts.set(it, n);
+      return n;
+    };
+    const RETRY_LIMIT = 2;
+
     // Step 2: 超限货分配 — 每件独占一个适合的最小 FR/OT
     for (const item of oversizeItems) {
       const candidates = filterContainerTypes(item, containerSpecs);
@@ -177,19 +191,30 @@ const Planner = (() => {
       const usableCodes = new Set(filterContainerTypes(item, containerSpecs).map(c => c.code));
 
       if (stackableGroup && !usableCodes.has(stackableGroup.container.code)) {
-        assignments.push({
-          containerCode: stackableGroup.container.code,
-          items: stackableGroup.items,
-          reason: `可叠货聚合，${stackableGroup.items.length}件，体积${stackableGroup.totalVolume.toFixed(2)}m³`
-        });
+        if (stackableGroup.items.length > 0) {
+          assignments.push({
+            containerCode: stackableGroup.container.code,
+            items: stackableGroup.items,
+            reason: `可叠货聚合，${stackableGroup.items.length}件，体积${stackableGroup.totalVolume.toFixed(2)}m³`
+          });
+        }
         stackableGroup = null;
-        i--;
+        if (bumpRetry(item) <= RETRY_LIMIT) { i--; } else { unassigned.push(item); }
         continue;
       }
 
       if (!stackableGroup) {
         for (const c of standardContainers) {
-          if (usableCodes.has(c.code) && itemVol <= c.L * c.W * c.H * VOLUME_FACTOR) {
+          // 2026-10-13 修复（P0-1）：建组门槛与下方“加入检查”同口径——新建组必能接纳首件。
+          // （原实现仅查体积：体积合格但高度/底面积被加入检查拒绝的货物会触发死循环。）
+          const firstFloor = item.l * item.w;
+          const firstH = item.h; // 与下方加入检查的层高口径一致（首件层高 = item.h）
+          if (usableCodes.has(c.code) &&
+              itemVol <= c.L * c.W * c.H * VOLUME_FACTOR &&
+              item.weight <= c.payload &&
+              firstFloor <= c.L * c.W &&
+              firstH <= c.H &&
+              CDB.hasValidOrientationForContainer(item, c, 0.01)) {
             stackableGroup = {
               container: c,
               items: [],
@@ -219,6 +244,8 @@ const Planner = (() => {
 
         // 高度估算：本型号加入后的层数 = ceil(总件数 / 每层可放件数)（保守按单层满铺），
         // 总高 = 各型号层高之和，不允许超过箱高（高度由 0.85 体积系数之外的另一维约束）。
+        // 2026-10-13（P0-1）：层高保持未旋转 item.h（保守预筛，维护 C-N1 防线）——
+        // 可放倒的高件不在此放行，由熔断护栏转入 unassigned，走 calculate 的扩容兜底（结果正确）。
         const modelCount = (stackableGroup.modelCounts.get(item.model) || 0) + 1;
         const perLayer = Math.max(1, Math.floor((stackableGroup.container.L * stackableGroup.container.W) / itemFloor));
         const thisModelLayers = Math.ceil(modelCount / perLayer);
@@ -229,13 +256,16 @@ const Planner = (() => {
             stackableGroup.totalWeight + item.weight > stackableGroup.container.payload ||
             nextFloor > stackableGroup.container.L * stackableGroup.container.W ||
             nextHeight > stackableGroup.container.H) {
-          assignments.push({
-            containerCode: stackableGroup.container.code,
-            items: stackableGroup.items,
-            reason: `可叠货聚合，${stackableGroup.items.length}件，体积${stackableGroup.totalVolume.toFixed(2)}m³`
-          });
+          if (stackableGroup.items.length > 0) {
+            assignments.push({
+              containerCode: stackableGroup.container.code,
+              items: stackableGroup.items,
+              reason: `可叠货聚合，${stackableGroup.items.length}件，体积${stackableGroup.totalVolume.toFixed(2)}m³`
+            });
+          }
           stackableGroup = null;
-          i--; // 重试当前 item
+          // 熔断护栏：同一件货物过多回退重试 → 转 unassigned（防死循环）
+          if (bumpRetry(item) <= RETRY_LIMIT) { i--; } else { unassigned.push(item); }
           continue;
         }
         stackableGroup.items.push(item);
@@ -275,7 +305,7 @@ const Planner = (() => {
           reason: `轻型不可叠分组，${lightGroup.items.length}件`
         });
         lightGroup = null;
-        i--;
+        if (bumpRetry(item) <= RETRY_LIMIT) { i--; } else { unassigned.push(item); }
         continue;
       }
 
@@ -307,7 +337,7 @@ const Planner = (() => {
             reason: `轻型不可叠分组，${lightGroup.items.length}件`
           });
           lightGroup = null;
-          i--;
+          if (bumpRetry(item) <= RETRY_LIMIT) { i--; } else { unassigned.push(item); }
           continue;
         }
         lightGroup.items.push(item);

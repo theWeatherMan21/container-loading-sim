@@ -372,19 +372,19 @@ test('F-06 长(毫米) 表头 → mm（含全角括号）', () => {
 // 14) C-02：getEffectiveMaxDims(40FR) 单一来源 FR_REALITY_LIMITS
 //    原缺陷：箱型声明字段与 FR_REALITY_LIMITS 双口径并存，改任一处不生效
 // ═══════════════════════════════════════════
-test('C-02 getEffectiveMaxDims(40FR) 单一来源', () => {
+test('C-02 getEffectiveMaxDims(40FR) 口径（2026-10-13 更新：FR 不设尺寸限制）', () => {
   const fr = CDB.CONTAINER_DB['40FR'];
   const eff = CDB.getEffectiveMaxDims(fr, 0.05);
-  // FR 分支 = 箱体 + FR_REALITY_LIMITS（超长 0.5 / 超宽 2.0 / 超高 1.0），与 tolerance 无关
-  assert(Math.abs(eff.maxL - (fr.L + 0.5)) < 1e-9, `maxL 应为 ${fr.L + 0.5}，实际 ${eff.maxL}`);
-  assert(Math.abs(eff.maxW - (fr.W + 2.0)) < 1e-9, `maxW 应为 ${fr.W + 2.0}，实际 ${eff.maxW}`);
-  assert(Math.abs(eff.maxH - (fr.H + 1.0)) < 1e-9, `maxH 应为 ${fr.H + 1.0}，实际 ${eff.maxH}`);
-  // 双口径回归：即使对象残留旧声明字段（maxOverLength 等），flatRack 分支也不得读取
-  const legacy = { ...fr, maxOverLength: 9, maxOverWidth: 8, maxOverHeight: 7 };
-  const effLegacy = CDB.getEffectiveMaxDims(legacy, 0.05);
-  assert(Math.abs(effLegacy.maxL - (fr.L + 0.5)) < 1e-9, `残留 maxOverLength 不得生效: ${effLegacy.maxL}`);
-  assert(Math.abs(effLegacy.maxW - (fr.W + 2.0)) < 1e-9, `残留 maxOverWidth 不得生效: ${effLegacy.maxW}`);
-  assert(Math.abs(effLegacy.maxH - (fr.H + 1.0)) < 1e-9, `残留 maxOverHeight 不得生效: ${effLegacy.maxH}`);
+  // 2026-10-13 业务口径（爹地）：FR 系列不设尺寸限制——有效尺寸返回放开包络
+  // （数值护栏 FR_FREE_DIM=1000，非业务限制；可装性由 frFloorFeasible 地板覆盖率判据承担）。
+  assert(eff.maxL >= 100 && eff.maxW >= 100 && eff.maxH >= 100,
+    `FR 有效尺寸应为放开包络，实际 ${eff.maxL}/${eff.maxW}/${eff.maxH}`);
+  const eff2 = CDB.getEffectiveMaxDims(fr, 0.2);
+  assert(eff2.maxL === eff.maxL && eff2.maxW === eff.maxW && eff2.maxH === eff.maxH,
+    'FR 放开包络不受 tolerance 影响');
+  // 单件可装性走地板覆盖率判据（frFloorFeasible）：贴角近似
+  assert(CDB.frFloorFeasible({ l: 13, w: 1, h: 1 }, fr), '13m 长货在 40FR 上应可装（贴端，地板覆盖 89%）');
+  assert(!CDB.frFloorFeasible({ l: 5, w: 5, h: 5 }, fr), '三边均超地板宽两倍的立方体应不可装（覆盖率 <50%）');
   // 非 FR 箱不受影响（标准柜仍按 L - tolerance）
   const gp20 = CDB.CONTAINER_DB['20GP'];
   const effGP = CDB.getEffectiveMaxDims(gp20, 0.05);

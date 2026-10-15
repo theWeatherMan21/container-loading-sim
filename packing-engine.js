@@ -40,7 +40,8 @@ const PackingEngine = (() => {
   };
 
   const SUPPORT_MIN_RATIO = 0.70; // 底面最小支撑覆盖率
-  const MIN_FR_FLOOR_RATIO = 0.50; // FR 框架柜：z=0 时货物底面投影至少50%与地板重合
+  // FR 地板最低覆盖率：单一来源 = ContainerDB.FR_MIN_FLOOR_RATIO（2026-10-13 口径变更）
+  const MIN_FR_FLOOR_RATIO = (typeof CDB.FR_MIN_FLOOR_RATIO === 'number') ? CDB.FR_MIN_FLOOR_RATIO : 0.50;
 
   // ═══════════════════════════════════════════
   // EMS 空间数据结构
@@ -284,10 +285,11 @@ const PackingEngine = (() => {
    * 由归一化数值自然排序（x 越靠里端、y 越靠左，归一化分越高）
    */
   function dblScore(spaceX, spaceY, spaceZ, container, effDims) {
-    // 归一化到 [0,1]，使用有效尺寸避免 FR 超限空间产生负分
-    const maxL = (effDims && effDims.maxL) || container.L;
-    const maxW = (effDims && effDims.maxW) || container.W;
-    const maxH = (effDims && effDims.maxH) || container.H;
+    // 归一化到 [0,1]。2026-10-13：基准改用箱体真实内尺寸——FR 解除尺寸限制后
+    // 有效尺寸为放开包络（FR_FREE_DIM），继续用它归一化会使 x/y/z 分数全部退化（≈1），DBL 排序失效。
+    const maxL = container.L || 1;
+    const maxW = container.W || 1;
+    const maxH = container.H || 1;
     // xScore: 越靠近 origin（x=0，即车厢里端），分数越高
     const xScore = 1 - (spaceX / maxL);
     // yScore: 越靠近左边（y=0），分数越高
@@ -386,6 +388,26 @@ const PackingEngine = (() => {
     const overlapArea = (ox2 - ox) * (oy2 - oy);
     const cargoArea = l * w;
     return cargoArea > CONSTANTS.EPS ? overlapArea / cargoArea : 0;
+  }
+
+  /**
+   * 碰撞检查：候选货物的 AABB 是否与任一已放货物相交（口径与 detectOverlaps 一致）。
+   *
+   * 2026-10-13：FR 跳过空间盒尺寸检查后，货物可从空间角向 +x/+y/+z 悬出放置——
+   * 悬出部分可能进入相邻空间、与其中的已放货物实际相交，EMS 空间不变式在此
+   * 路径上不再充分，必须在放置时显式排除。
+   * @returns {boolean} true = 存在实际重叠（不可放）
+   */
+  function collidesWithPlaced(x, y, z, l, w, h, placedItems) {
+    const EPS = CONSTANTS.EPS;
+    for (const p of placedItems) {
+      if (x + EPS < p.x + p.l && x + l > p.x + EPS &&
+          y + EPS < p.y + p.w && y + w > p.y + EPS &&
+          z + EPS < p.z + p.h && z + h > p.z + EPS) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -501,25 +523,29 @@ const PackingEngine = (() => {
       if (space.blockedAbove && space.z > CONSTANTS.EPS) continue;
 
       for (const o of orientations) {
-        // 检查方向是否fit空间
-        if (o.l > space.L + CONSTANTS.EPS || o.w > space.W + CONSTANTS.EPS || o.h > space.H + CONSTANTS.EPS) continue;
-
-        // 检查是否超出容器边界（FR 使用含现实超限上限的有效尺寸）
+        const isFR = container.type === 'flatRack';
         const effDims = getEffectiveMaxDims(container, tolerance);
-        if (o.l > effDims.maxL || o.w > effDims.maxW || o.h > effDims.maxH) continue;
+
+        if (!isFR) {
+          // 检查方向是否fit空间
+          if (o.l > space.L + CONSTANTS.EPS || o.w > space.W + CONSTANTS.EPS || o.h > space.H + CONSTANTS.EPS) continue;
+
+          // 检查是否超出容器边界
+          if (o.l > effDims.maxL || o.w > effDims.maxW || o.h > effDims.maxH) continue;
+        }
+        // 2026-10-13（爹地口径）：FR 不设尺寸限制——跳过空间盒/有效尺寸的 fit 检查，
+        // 改由下方「贴角放置 + 地板覆盖率 + 已放货物碰撞检查」判定可放性。
 
         // 检查门约束（FR 箱型无门约束）
         // 注意：传入 orientationFixed，保证固定朝向货物只用其两个水平朝向过门检查，
         // 与 CDB.checkDoorConstraint 内部口径一致（否则朝向对象缺字段会退化为 6 方向
         // 检查，含倒置朝向，可能放行物理上无法进门的水平朝向）。
-        if (container.type !== 'flatRack') {
+        if (!isFR) {
           const doorCheck = checkDoorConstraint({ l: o.l, w: o.w, h: o.h, orientationFixed: item.orientationFixed === true }, container, tolerance);
           if (!doorCheck.pass) continue;
         }
 
         // 计算失败必须保留未装货物，调用方据此决定换箱/重算。
-        // （原此处重复调用 hasValidOrientationForContainer 与入口检查恒同，已删除；
-        //   容器尺寸适配由上方 effDims 边界检查 + 门约束检查共同兜底。）
 
         // 重量检查
         if (currentWeight + item.weight > container.payload) continue;
@@ -538,14 +564,15 @@ const PackingEngine = (() => {
           }
         }
 
-        // FR 框架柜：任意层（含 z=0）货物底面必须与地板有交集
-        // 因 EMS 空间含超限余量，z=0 时货物也可能被放到地板外，需显式检查
-        if (container.type === 'flatRack') {
+        // FR 框架柜专项（2026-10-13 改造：尺寸限制解除后，以物理底线为唯一判据）：
+        //   ① 贴角放置的地板覆盖率——z=0 层需 ≥ FR_MIN_FLOOR_RATIO（防悬空摆放）；上层至少与地板有交集；
+        //   ② 碰撞检查——跳过空间盒检查后货物可从空间角向 +x/+y/+z 悬出，
+        //      悬出部分可能进入相邻空间已放货物的区域，必须显式排除实际重叠。
+        if (isFR) {
           const floorRatio = calcFloorOverlapRatio(space.x, space.y, o.l, o.w, container);
           if (floorRatio <= CONSTANTS.EPS) continue; // 无交集，完全在底板外
-          // z=0 时：必须至少 MIN_FR_FLOOR_RATIO（50%）的投影落在地板上
-          // 防止货物"挂在侧面"
           if (space.z <= CONSTANTS.EPS && floorRatio < MIN_FR_FLOOR_RATIO) continue;
+          if (collidesWithPlaced(space.x, space.y, space.z, o.l, o.w, o.h, placedItems)) continue;
         }
 
         // 分数
@@ -574,7 +601,13 @@ const PackingEngine = (() => {
 
         if (totalScore > bestScore) {
           bestScore = totalScore;
-          best = { spaceIndex: si, orientation: o, x: space.x, y: space.y, z: space.z };
+          best = {
+            spaceIndex: si,
+            orientation: o,
+            x: space.x, y: space.y, z: space.z,
+            // FR 超尺寸标记（3D 标注）：解除尺寸限制后以实际尺寸对比产生
+            overLength: isFR && (o.l > container.L + CONSTANTS.EPS || o.w > container.W + CONSTANTS.EPS || o.h > container.H + CONSTANTS.EPS)
+          };
         }
       }
     }
@@ -605,6 +638,8 @@ const PackingEngine = (() => {
             const floorRatio = calcFloorOverlapRatio(space.x, space.y, o.l, o.w, container);
             if (floorRatio <= CONSTANTS.EPS) continue; // 无交集
             if (floorRatio < MIN_FR_FLOOR_RATIO) continue; // 箱内投影不足 50%（悬出过多）
+            // 碰撞检查（与常规分支同口径，2026-10-13）
+            if (collidesWithPlaced(space.x, space.y, space.z, o.l, o.w, o.h, placedItems)) continue;
 
             // 评分：贴端贴地贴左最优
             const score = dblScore(space.x, space.y, space.z, container, effDims);
@@ -871,7 +906,9 @@ const PackingEngine = (() => {
   function getPackSpaceDims(container, tolerance) {
     const effDims = getEffectiveMaxDims(container, tolerance);
     if (container.type === 'flatRack') {
-      return { maxL: container.L, maxW: effDims.maxW, maxH: effDims.maxH };
+      // 2026-10-13：FR 解除尺寸限制后，排布空间退回箱体真实内尺寸作为几何基底；
+      // 货物超出部分由「贴角放置 + 地板覆盖率 + 碰撞检查」在放置时判定（不再受空间盒限制）。
+      return { maxL: container.L, maxW: container.W, maxH: container.H };
     }
     return effDims;
   }
@@ -884,7 +921,9 @@ const PackingEngine = (() => {
    * @returns {{ placedItems, unplacedItems, utilization, weightUtil, errors, warnings }}
    */
   function packSingleContainer(cargoItems, container, options = {}) {
-    const tolerance = options.tolerance || 0.05;
+    // 2026-10-13 修复（审阅 P1-5）：数值参数判空统一用 == null —— 原 `options.tolerance || 0.05`
+    // 会把合法的 0（零间隙）静默改写为 0.05。
+    const tolerance = options.tolerance == null ? 0.05 : Number(options.tolerance);
     const sortStrategy = options.sortStrategy || 'smart';
 
     const effDims = getEffectiveMaxDims(container, tolerance);
@@ -960,7 +999,11 @@ const PackingEngine = (() => {
     const utilization = rawUtil;
     const overCapacity = packedVolume > containerVol;
     const overVolume = rawUtil > 1 + CONSTANTS.EPS;
-    const effectiveVolume = effDims.maxL * effDims.maxW * effDims.maxH;
+    // 2026-10-13：FR 解除尺寸限制后不再有“有效排布空间”概念——FR 的紧凑度基准退回真实箱容
+    // （普通箱维持原口径：相对扣减容差后的有效尺寸）。
+    const effectiveVolume = container.type === 'flatRack'
+      ? containerVol
+      : effDims.maxL * effDims.maxW * effDims.maxH;
     const spaceEfficiency = effectiveVolume > 0 ? packedVolume / effectiveVolume : 0;
     const weightUtil = container.payload > 0 ? packedWeight / container.payload : 0;
 

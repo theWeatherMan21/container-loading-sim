@@ -257,11 +257,11 @@ if (unexpectedCodes.length > 0) {
 // FR 验证
 const fr40 = CDB.CONTAINER_DB['40FR'];
 const frEff = CDB.getEffectiveMaxDims(fr40, 0.05);
-logInfo(`40FR 有效尺寸: maxH=${frEff.maxH.toFixed(3)}m (内高${fr40.H}+1.0m超限)`);
-if (Math.abs(frEff.maxH - (fr40.H + 1.0)) < 0.01) {
-  logOk('FR 超高限制 = 1.0m ✓');
+logInfo(`40FR 有效尺寸: maxH=${frEff.maxH}（2026-10-13 口径：FR 不设尺寸限制）`);
+if (frEff.maxH >= 100) {
+  logOk('FR 不设尺寸限制（放开包络）✓');
 } else {
-  logFail(`FR 超高限制: 期望 ${fr40.H + 1.0}, 实际 ${frEff.maxH.toFixed(3)}`);
+  logFail(`FR 尺寸限制应已放开: 实际 maxH=${frEff.maxH}`);
 }
 
 // ═══════════════════════════════════════════

@@ -81,7 +81,7 @@ const FieldParser = (() => {
     ],
     // 装箱算法优先使用毛重，没有毛重时才用净重
     grossWeight: [
-      '毛重', '毛重(kg)', '毛重(吨)', '总重', 'Gross Weight', 'GW', 'G.W.',
+      '毛重', '毛重(kg)', '毛重(吨)', '总重', 'Gross Weight', 'Gross', 'GW', 'G.W.',
       'gross_weight', 'grossWeight', 'weight_total', '总重量',
       '单件毛重', '每件毛重', 'G Weight',
       '重量', '重量(kg)', '重量(吨)', 'Weight', 'weight',
@@ -89,7 +89,7 @@ const FieldParser = (() => {
     ],
     netWeight: [
       '净重', '净重(kg)', '净重(吨)',
-      'Net Weight', 'NW', 'N.W.', 'net_weight', 'netWeight'
+      'Net Weight', 'Net', 'NW', 'N.W.', 'net_weight', 'netWeight'
     ],
     volume: [
       '体积', '体积(m³)', 'Volume', 'Vol', 'CBM', 'cbm', 'volume',
@@ -104,6 +104,10 @@ const FieldParser = (() => {
       '可堆叠', '是否可堆叠', '堆叠', 'can be stacked', 'can stack'
     ]
   };
+
+  // 2026-10-13：忽略列词表——备注/注释类列一律判 unknown（不参与字段分配），
+  // 避免其文本值（如 "Final"/"Estimated"）被样本推断误判为 model（英文单 Remark 列抢占型号槽）。
+  const IGNORE_HEADERS = ['remark', 'remarks', '备注', '注释', 'note', 'notes'];
 
   // ── 表头识别 ──
 
@@ -173,6 +177,9 @@ const FieldParser = (() => {
     // F-06: 全角括号归一化（"长（毫米）" → "长(毫米)"，让 '长(mm)' 等关键词命中，避免列分类失败）
     const h = headerText.toLowerCase().replace(/[（）]/g, m => m === '（' ? '(' : ')');
     const headerLines = h.split(/[\r\n\s]+/).filter(Boolean);
+
+    // 2026-10-13：备注/注释类列直接判 unknown（防其文本值被误判为 model）
+    if (IGNORE_HEADERS.includes(h.trim())) return { field: 'unknown', confidence: 'low' };
 
     // 1. 关键词匹配
     // 单字符关键词用边界检测（支持 "L (mm)" / "W:" 等格式，I2 修复）
@@ -594,18 +601,39 @@ const FieldParser = (() => {
   }
 
   /**
-   * 合并多个Sheet的行，清理重复表头
+   * 合并多个Sheet的行，清理重复表头。
+   *
+   * 2026-10-13 修复（审阅 P0-3）：只删除“与上一个已保留行完全相同的【表头样式】行”。
+   * 原实现对任意相邻全等行去重——真实数据行（同型号同尺寸的重复行）被静默删除。
+   * 数据行即使逐字相同也必须保留（后续按行正常提取，件数不丢失）。
    */
+  function looksLikeHeader(row) {
+    // 表头样式：≥3 个单元格命中字段关键词（普通表头至少含 型号/长/宽/高/数量 等）
+    let hits = 0;
+    for (const cell of (row || [])) {
+      const s = String(cell || '').trim().toLowerCase();
+      if (!s) continue;
+      for (const keywords of Object.values(FIELD_KEYWORDS)) {
+        if (keywords.some(kw => {
+          const k = kw.toLowerCase();
+          return s === k || s.includes(k);
+        })) { hits++; break; }
+      }
+      if (hits >= 3) return true;
+    }
+    return false;
+  }
+
   function cleanMergedRows(allRows, totalRows) {
     if (allRows.length === 0) return [];
-    // 简单的去重：如果相邻两行完全相同，合并
     const cleaned = [allRows[0]];
     for (let i = 1; i < allRows.length; i++) {
       const prev = cleaned[cleaned.length - 1];
       const curr = allRows[i];
-      if (JSON.stringify(prev) !== JSON.stringify(curr)) {
-        cleaned.push(curr);
-      }
+      const identical = JSON.stringify(prev) === JSON.stringify(curr);
+      // 仅删除“重复表头”；逐字相同的数据行保留（防件数静默缩水）
+      if (identical && looksLikeHeader(curr)) continue;
+      cleaned.push(curr);
     }
     return cleaned;
   }
@@ -647,12 +675,17 @@ const FieldParser = (() => {
 
     // 找到各字段对应的列索引
     let idCol = -1, modelCol = -1, lengthCol = -1, widthCol = -1, heightCol = -1,
-        qtyCol = -1, weightCol = -1, netWeightCol = -1, volCol = -1, stackableCol = -1;
+        qtyCol = -1, weightCol = -1, netWeightCol = -1, volCol = -1, stackableCol = -1,
+        descriptionCol = -1;
 
+    // 2026-10-13 修复（审阅 P0-1）：列槽分配改为两阶段——① 明确字段（高置信）优先占槽；
+    // ② possible* 低置信推断仅填充剩余空槽。原实现按列序先到先得，"推断为尺寸"的重量列
+    // （Net/Gross）会抢占 length/width 槽位、明确的 L/W/H 列反被丢弃（英文标准单必错）。
     for (let i = 0; i < colTypes.length; i++) {
       switch (colTypes[i]?.field) {
         case 'id': if (idCol < 0) idCol = i; break;
         case 'model': if (modelCol < 0) modelCol = i; break;
+        case 'description': if (descriptionCol < 0) descriptionCol = i; break;
         case 'length': if (lengthCol < 0) lengthCol = i; break;
         case 'width': if (widthCol < 0) widthCol = i; break;
         case 'height': if (heightCol < 0) heightCol = i; break;
@@ -673,19 +706,30 @@ const FieldParser = (() => {
         case 'netWeight': if (netWeightCol < 0) netWeightCol = i; break;
         case 'stackable': if (stackableCol < 0) stackableCol = i; break;
         case 'combinedDimension': if (lengthCol < 0) lengthCol = i; break;
+        case 'volume': volCol = i; break;
+      }
+    }
+    // 阶段 2：低置信推断列（possible*）只填充剩余空槽，不再抢占明确列
+    for (let i = 0; i < colTypes.length; i++) {
+      switch (colTypes[i]?.field) {
         case 'possibleDimension':
           if (lengthCol < 0) lengthCol = i;
           else if (widthCol < 0) widthCol = i;
           else if (heightCol < 0) heightCol = i;
           break;
         case 'possibleWeight': if (weightCol < 0) weightCol = i; break;
-        case 'volume': volCol = i; break;
       }
     }
 
     // 优先使用毛重，没有毛重列时才用净重
     if (weightCol < 0 && netWeightCol >= 0) {
       weightCol = netWeightCol;
+    }
+
+    // 2026-10-13：型号列兜底——无 model 列时用 description 列作为名称
+    // （避免名称落到 Remark/备注等被忽略列，或整体缺名）
+    if (modelCol < 0 && descriptionCol >= 0) {
+      modelCol = descriptionCol;
     }
 
     if (modelCol < 0) {
@@ -698,7 +742,7 @@ const FieldParser = (() => {
       warnings.push('未找到数量列，默认每行数量=1');
     }
     if (weightCol < 0) {
-      warnings.push('未找到重量列，将使用体积估算重量');
+      warnings.push('未找到重量列：所有货物按 0kg 处理，载重校验不会生效——请在列映射中指定重量列，或人工复核载重');
     }
 
     // 推断尺寸单位：优先传入的 forceDimUnit，其次表头声明，最后数值推断
@@ -944,6 +988,7 @@ const FieldParser = (() => {
     reExtract,
     normalizeNumber,
     detectUnitFromHeader,
+    looksLikeHeader,
     FIELD_KEYWORDS
   };
 })();
