@@ -328,7 +328,7 @@ const PackingEngine = (() => {
    * 计算货物底面在 (x,y,z) 处的支撑覆盖率
    * @returns {number} 0-1
    */
-  function calcSupportRatio(x, y, z, l, w, placedItems) {
+  function calcSupportRatio(x, y, z, l, w, placedItems, unsupportedSet = null) {
     if (z <= CONSTANTS.EPS) return 1; // 地板提供完整支撑
     const baseArea = l * w;
     if (baseArea <= CONSTANTS.EPS) return 0;
@@ -336,8 +336,9 @@ const PackingEngine = (() => {
     let supported = 0;
     for (const p of placedItems) {
       if (Math.abs(p.z + p.h - z) > CONSTANTS.EPS) continue;
-      // 支撑传递性：支撑物自身必须被支撑（悬空物品不计入支撑面积）
-      if (!hasUnderlyingSupport(p, placedItems)) continue;
+      // 支撑传递性：支撑物自身必须被支撑（悬空物品不计入支撑面积）。
+      // unsupportedSet（可选）：复查期预计算的“悬空集合”，O(1) 跳过（2026-10-15 性能 P1-7）。
+      if (unsupportedSet ? unsupportedSet.has(p) : !hasUnderlyingSupport(p, placedItems)) continue;
       const ox = Math.max(x, p.x);
       const oy = Math.max(y, p.y);
       const ox2 = Math.min(x + l, p.x + p.l);
@@ -459,7 +460,7 @@ const PackingEngine = (() => {
    * @param {Array} placedItems - 已放置货物列表
    * @returns {boolean}
    */
-  function checkWeightBearing(x, y, z, l, w, aboveWeight, placedItems) {
+  function checkWeightBearing(x, y, z, l, w, aboveWeight, placedItems, unsupportedSet = null) {
     if (z <= CONSTANTS.EPS) return true; // 地板支撑，通过
 
     const aboveArea = l * w;
@@ -472,8 +473,8 @@ const PackingEngine = (() => {
 
     for (const p of placedItems) {
       if (Math.abs(p.z + p.h - z) > CONSTANTS.EPS) continue;
-      // 支撑传递性：自身悬空的物品不得作为承重支撑
-      if (!hasUnderlyingSupport(p, placedItems)) continue;
+      // 支撑传递性：自身悬空的物品不得作为承重支撑（unsupportedSet 为预计算快路径）
+      if (unsupportedSet ? unsupportedSet.has(p) : !hasUnderlyingSupport(p, placedItems)) continue;
       const ox = Math.max(x, p.x);
       const oy = Math.max(y, p.y);
       const ox2 = Math.min(x + l, p.x + p.l);
@@ -569,6 +570,8 @@ const PackingEngine = (() => {
         //   ② 碰撞检查——跳过空间盒检查后货物可从空间角向 +x/+y/+z 悬出，
         //      悬出部分可能进入相邻空间已放货物的区域，必须显式排除实际重叠。
         if (isFR) {
+          // 2026-10-15 口径（爹地）：平放限定——竖立边不得超过箱内长（禁“竖放塞小箱”，如 13m 管立于 FR）。
+          if (o.h > container.L + CONSTANTS.EPS) continue;
           const floorRatio = calcFloorOverlapRatio(space.x, space.y, o.l, o.w, container);
           if (floorRatio <= CONSTANTS.EPS) continue; // 无交集，完全在底板外
           if (space.z <= CONSTANTS.EPS && floorRatio < MIN_FR_FLOOR_RATIO) continue;
@@ -619,6 +622,8 @@ const PackingEngine = (() => {
     if (!best && container.type === 'flatRack') {
       const effDims = getEffectiveMaxDims(container, tolerance);
       for (const o of orientations) {
+        // 2026-10-15：平放限定同样约束超长贴端分支（竖立边 ≤ 箱内长）
+        if (o.h > container.L + CONSTANTS.EPS) continue;
         if (o.l <= effDims.maxL + CONSTANTS.EPS &&
             o.w <= effDims.maxW + CONSTANTS.EPS &&
             o.h <= effDims.maxH + CONSTANTS.EPS) {
@@ -725,6 +730,85 @@ const PackingEngine = (() => {
     return placed;
   }
 
+/**
+ * 层内支撑/承重/四角支撑批量预计算（2026-10-15 性能 P1-7 优化）。
+ *
+ * 与逐格调用 calcSupportRatio / hasCornerSupport / checkWeightBearing 的结果一致：
+ * - 支撑/承重只统计「顶面高度 == 本层 pz」且自身有底层支撑（hasUnderlyingSupport）的支撑物；
+ * - 四角覆盖不区分支撑物自身是否悬空（与 hasCornerSupport 口径一致）；
+ * - 累加顺序与逐格版本一致（按 placedItems 顺序），浮点求和结果相同；
+ * - 同层新放置货物顶面 = pz+h ≠ pz，不会影响本层其它格子的判定。
+ *
+ * @returns {Uint8Array} 长度 xCount*yCount，1 = 该格子三项检查全过
+ */
+  function precomputeLayerSupportChecks(space, l, w, pz, xCount, yCount, itemWeight, placedItems) {
+    const n = xCount * yCount;
+    const ok = new Uint8Array(n);
+    const aboveArea = l * w;
+    if (aboveArea <= CONSTANTS.EPS) return ok;
+    const supported = new Float64Array(n);   // Σ 接触面积（calcSupportRatio 分子）
+    const contactSum = new Float64Array(n);  // Σ 接触面积（checkWeightBearing supportedArea）
+    const belowWeight = new Float64Array(n);
+    const realCapacity = new Float64Array(n);
+    const hasReal = new Uint8Array(n);
+    const cornerBits = new Uint8Array(n);    // bit0..3：四角被支撑物覆盖
+
+    const gx0 = space.x, gy0 = space.y;
+    const gx1 = space.x + xCount * l, gy1 = space.y + yCount * w;
+    const EPS = CONSTANTS.EPS;
+
+    for (const p of placedItems) {
+      if (Math.abs(p.z + p.h - pz) > EPS) continue;
+      const ix0 = Math.max(p.x, gx0), iy0 = Math.max(p.y, gy0);
+      const ix1 = Math.min(p.x + p.l, gx1), iy1 = Math.min(p.y + p.w, gy1);
+      if (ix0 >= ix1 - EPS || iy0 >= iy1 - EPS) continue;
+
+      // 候选网格中与 p 可能相交的格范围（放宽一格，格内再做精确相交判定）
+      const xi0 = Math.max(0, Math.floor((ix0 - gx0) / l));
+      const xi1 = Math.min(xCount - 1, Math.ceil((ix1 - gx0) / l));
+      const yi0 = Math.max(0, Math.floor((iy0 - gy0) / w));
+      const yi1 = Math.min(yCount - 1, Math.ceil((iy1 - gy0) / w));
+      // 支撑传递性（计算一次，避免逐格重复）：悬空物品不计入支撑/承重（四角除外，见上）
+      const supportedOk = hasUnderlyingSupport(p, placedItems);
+      const isReal = supportedOk && p.maxStackWeight != null && p.maxStackWeight >= 0;
+
+      for (let yi = yi0; yi <= yi1; yi++) {
+        for (let xi = xi0; xi <= xi1; xi++) {
+          const cx = gx0 + xi * l, cy = gy0 + yi * w;
+          const ox = Math.max(cx, p.x), oy = Math.max(cy, p.y);
+          const ox2 = Math.min(cx + l, p.x + p.l), oy2 = Math.min(cy + w, p.y + p.w);
+          if (!(ox < ox2 - EPS && oy < oy2 - EPS)) continue;
+          const idx = yi * xCount + xi;
+          // 四角覆盖（与 hasCornerSupport 的角点判定逐字一致；不受支撑传递性过滤）
+          if (cx + EPS >= p.x && cx - EPS <= p.x + p.l && cy + EPS >= p.y && cy - EPS <= p.y + p.w) cornerBits[idx] |= 1;
+          if (cx + l + EPS >= p.x && cx + l - EPS <= p.x + p.l && cy + EPS >= p.y && cy - EPS <= p.y + p.w) cornerBits[idx] |= 2;
+          if (cx + EPS >= p.x && cx - EPS <= p.x + p.l && cy + w + EPS >= p.y && cy + w - EPS <= p.y + p.w) cornerBits[idx] |= 4;
+          if (cx + l + EPS >= p.x && cx + l - EPS <= p.x + p.l && cy + w + EPS >= p.y && cy + w - EPS <= p.y + p.w) cornerBits[idx] |= 8;
+          if (!supportedOk) continue;
+          const contact = (ox2 - ox) * (oy2 - oy);
+          supported[idx] += contact;
+          contactSum[idx] += contact;
+          const ratio = contact / aboveArea;
+          if (isReal) { realCapacity[idx] += p.maxStackWeight * ratio; hasReal[idx] = 1; }
+          else { belowWeight[idx] += p.weight * ratio; }
+        }
+      }
+    }
+
+    for (let idx = 0; idx < n; idx++) {
+      // calcSupportRatio：supportRatio ≥ SUPPORT_MIN_RATIO（同除法与比较）
+      if (supported[idx] / aboveArea < SUPPORT_MIN_RATIO) continue;
+      // hasCornerSupport：四角均有支撑
+      if ((cornerBits[idx] & 15) !== 15) continue;
+      // checkWeightBearing：先支撑面积下限，再按声明承重/保守兜底判定
+      if (contactSum[idx] < aboveArea * SUPPORT_MIN_RATIO) continue;
+      ok[idx] = hasReal[idx]
+        ? (realCapacity[idx] >= itemWeight ? 1 : 0)
+        : (belowWeight[idx] >= itemWeight * CONSTANTS.SUPPORT_WEIGHT_RATIO ? 1 : 0);
+    }
+    return ok;
+  }
+
   // ═══════════════════════════════════════════
   // 层铺批量放置
   // ═══════════════════════════════════════════
@@ -743,9 +827,17 @@ const PackingEngine = (() => {
       if (o.l > effDims.maxL + CONSTANTS.EPS ||
           o.w > effDims.maxW + CONSTANTS.EPS ||
           o.h > effDims.maxH + CONSTANTS.EPS) return false;
+      // 2026-10-15 口径：FR 平放限定（竖立边 ≤ 箱内长；禁“竖放塞小箱”）
+      if (container.type === 'flatRack' && o.h > container.L + CONSTANTS.EPS) return false;
       return container.type === 'flatRack' ||
         checkDoorConstraint({ l: o.l, w: o.w, h: o.h, orientationFixed: item.orientationFixed === true }, container, tolerance).pass;
     });
+
+    // 2026-10-15（爹地口径）：FR 长度限定——最长边超出装箱上限（柱间长+伸出容限）→ 该箱不可用
+    if (container.type === 'flatRack' && typeof CDB.frLengthLimit === 'function' &&
+        Math.max(item.l, item.w, item.h) > CDB.frLengthLimit(container) + CONSTANTS.EPS) {
+      return { placed, remaining };
+    }
 
     if (orientations.length === 0) return { placed, remaining };
 
@@ -787,22 +879,26 @@ const PackingEngine = (() => {
       let placedThisRound = 0;
 
       for (let layer = 0; layer < maxLayers && remaining > 0; layer++) {
+        const pzLayer = bestSpace.z + layer * h;
+        // 2026-10-15（性能 P1-7 优化）：本层支撑/承重/四角支撑一次性批量预计算（与逐格调用逐位一致，
+        // 见 precomputeLayerSupportChecks 注释）。原实现逐格调用 calcSupportRatio/checkWeightBearing，
+        // 其内层对每个支撑物再算 hasUnderlyingSupport（O(已放件)），叠加成 O(格数×P²)≈O(P³) 的密集件
+        // 爆炸（2000 件 ≈ 45s 的主因）；批量化后同一层只扫一遍已放件。
+        const cellOk = pzLayer > CONSTANTS.EPS
+          ? precomputeLayerSupportChecks(bestSpace, l, w, pzLayer, xCount, yCount, item.weight, placedItems)
+          : null;
+
         for (let yi = 0; yi < yCount && remaining > 0; yi++) {
           for (let xi = 0; xi < xCount && remaining > 0; xi++) {
             const px = bestSpace.x + xi * l;
             const py = bestSpace.y + yi * w;
-            const pz = bestSpace.z + layer * h;
+            const pz = pzLayer;
 
             // 重量检查
             if (currentWeight + item.weight > container.payload) break;
 
-            // 支撑与承重检查必须和逐件 EMS 路径一致。
-            if (pz > CONSTANTS.EPS) {
-              const support = calcSupportRatio(px, py, pz, l, w, placedItems);
-              const cornersOk = hasCornerSupport(px, py, pz, l, w, placedItems);
-              if (support < SUPPORT_MIN_RATIO || !cornersOk) continue;
-              if (!checkWeightBearing(px, py, pz, l, w, item.weight, placedItems)) continue;
-            }
+            // 支撑与承重检查（使用批量预计算结论；口径与逐格函数一致）
+            if (cellOk && !cellOk[yi * xCount + xi]) continue;
 
             // FR 框架柜：任意层（含 z=0）货物底面必须与地板有交集
             if (container.type === 'flatRack') {
@@ -1804,19 +1900,26 @@ const PackingEngine = (() => {
     }
 
     // 7. 叠放支撑率 + 四角支撑 + 承重复检（仅 z>0 的货物）
+    // 2026-10-15（性能 P1-7 优化）：复查期 placedItems 冻结 → 预计算“悬空集合”一次，
+    // 供 calcSupportRatio/checkWeightBearing O(1) 跳过；原实现逐件复查嵌套 hasUnderlyingSupport
+    // 形成 O(P³) 级开销（2000 件密集件复查 ≈ 20s 的主因）。
+    const unsupportedSet = new Set();
+    for (const p of placedItems) {
+      if (p.z > CONSTANTS.EPS && !hasUnderlyingSupport(p, placedItems)) unsupportedSet.add(p);
+    }
     const supportViolations = [];
     const cornerViolations = [];
     const bearingViolations = [];
     for (const item of placedItems) {
       if (item.z <= CONSTANTS.EPS) continue;
-      const ratio = calcSupportRatio(item.x, item.y, item.z, item.l, item.w, placedItems);
+      const ratio = calcSupportRatio(item.x, item.y, item.z, item.l, item.w, placedItems, unsupportedSet);
       if (ratio < SUPPORT_MIN_RATIO) {
         supportViolations.push(`${item.model} 支撑率 ${(ratio * 100).toFixed(1)}% < ${(SUPPORT_MIN_RATIO * 100).toFixed(0)}% @(${item.x.toFixed(2)},${item.y.toFixed(2)},${item.z.toFixed(2)})`);
       }
       if (!hasCornerSupport(item.x, item.y, item.z, item.l, item.w, placedItems)) {
         cornerViolations.push(`${item.model} 四角未完全支撑 @(${item.x.toFixed(2)},${item.y.toFixed(2)},${item.z.toFixed(2)})`);
       }
-      if (!checkWeightBearing(item.x, item.y, item.z, item.l, item.w, item.weight, placedItems)) {
+      if (!checkWeightBearing(item.x, item.y, item.z, item.l, item.w, item.weight, placedItems, unsupportedSet)) {
         bearingViolations.push(`${item.model} 下方货物承重不足 @(${item.x.toFixed(2)},${item.y.toFixed(2)},${item.z.toFixed(2)})`);
       }
     }
@@ -2580,7 +2683,7 @@ const PackingEngine = (() => {
     expandItems,
     getTotalQuantity,
     // 暴露内部函数供测试
-    _internal: { createSpace, cutSpace, mergeSpaces, dblScore, emsPlace, layerPack, detectOverlaps, sortItems, groupByModel, orderGroups, calcSupportRatio, hasCornerSupport, baseOverlapsContainerFloor, checkWeightBearing, weightedAvgUtilization, shouldAdoptRecalc }
+    _internal: { createSpace, cutSpace, mergeSpaces, dblScore, emsPlace, layerPack, precomputeLayerSupportChecks, detectOverlaps, sortItems, groupByModel, orderGroups, calcSupportRatio, hasCornerSupport, baseOverlapsContainerFloor, checkWeightBearing, weightedAvgUtilization, shouldAdoptRecalc }
   };
 })();
 

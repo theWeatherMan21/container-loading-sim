@@ -72,9 +72,9 @@ const CONTAINER_DB = {
     code: '20FR', name: '20尺框架柜', nameCN: '20尺框架',
     L: 5.612, W: 2.227, H: 2.219,
     doorW: Infinity, doorH: Infinity,
-    // 修正(2026-08-06)：原 31260kg 超过 20' 最大总重 30480kg（数学不可能）；
-    // 框架柜自重 ~2800kg+（无顶无侧壁但底板/端框更重）→ payload 取 27500
-    payload: 27500,
+    // 2026-10-15（爹地拍板）：载重取官方值（Hapag-Lloyd 规格表）——payload 31,260kg。
+    // （历史：旧版曾按 20' 常规总重口径保守取 27,500kg，现统一以官方框架柜规格为准。）
+    payload: 31260,
     volume: 5.612 * 2.227 * 2.219,
     type: 'flatRack',
     // 2026-10-13 业务口径（爹地）：FR 系列不设尺寸限制，不再有超限预算口径。allowOver* 保留为语义标记。
@@ -86,10 +86,9 @@ const CONTAINER_DB = {
     code: '40FR', name: '40尺框架柜', nameCN: '40尺框架',
     L: 11.652, W: 2.224, H: 2.248,
     doorW: Infinity, doorH: Infinity,
-    // 修正(2026-08-06)：原 44050kg 隐含自重仅 950kg（不现实）。
-    // 40FR 为重型重载柜，主流承运人按 45t 最大总重（45000kg）运营，自重 ~5400kg → payload 取 39600
-    // （若按 40' 标准 30480kg 总重口径则为 ~28000；本库取 45t 重载柜口径，与 40FR 用途一致）
-    payload: 39600,
+    // 2026-10-15（爹地拍板）：载重取官方值（Hapag-Lloyd 规格表）——payload 44,050kg。
+    // （历史：旧版曾按 45t 总重−自重保守取 39,600kg，现统一以官方框架柜规格为准。）
+    payload: 44050,
     volume: 11.652 * 2.224 * 2.248,
     type: 'flatRack',
     // 2026-10-13 业务口径（爹地）：FR 系列不设尺寸限制，不再有超限预算口径。allowOver* 保留为语义标记。
@@ -123,6 +122,12 @@ const FR_MIN_FLOOR_RATIO = 0.5; // FR 地板最低覆盖率（单一来源；pac
 // FR 有效尺寸“包络”哨兵值（纯数值护栏，防 Infinity 参与下游运算产生 NaN/死循环；
 // 非业务限制——可装性由上述物理底线判定，此值不对任何现实货物构成约束）。
 const FR_FREE_DIM = 1e3;
+
+// FR 长度限定（2026-10-15 爹地口径）：
+//   ① 分层：货物最长边 ≤ 20FR 柱间长 → 20FR；超过 → 40FR；
+//      超过 40FR 柱间长 + 伸出容限 → 警告「无法装载该货物」；
+//   ② 平放：竖立边（朝向的 h）不得超过箱内长——最长边必须水平放置，禁止“竖放塞小箱”。
+const FR_OVERHANG_ALLOWANCE_M = 2.0; // 40FR 伸出容限（超出柱间长、允许贴端伸出的部分，单位 m）
 
 /**
  * 获取单件货物对某箱型的有效尺寸上限
@@ -162,6 +167,18 @@ function frOrientationFloorRatio(o, container) {
   return (Math.min(o.l, L) / o.l) * (Math.min(o.w, W) / o.w);
 }
 
+/** FR 装载长度上限（含伸出容限）：20FR = 柱间长；40FR = 柱间长 + FR_OVERHANG_ALLOWANCE_M。 */
+function frLengthLimit(container) {
+  if (!container || container.type !== 'flatRack') return Infinity;
+  return container.L + (container.code === '40FR' ? FR_OVERHANG_ALLOWANCE_M : 0);
+}
+
+/** FR 朝向有效性（2026-10-15 口径）：竖立边 ≤ 箱内长（禁竖放）且贴角地板覆盖率 ≥ 阈值。 */
+function frOrientationValid(o, container) {
+  if (o.h > container.L + 1e-9) return false;
+  return frOrientationFloorRatio(o, container) >= FR_MIN_FLOOR_RATIO;
+}
+
 /**
  * FR 单件可装性（2026-10-13 口径：不设尺寸限制）：
  * 6 个朝向下存在一角，使贴角放置的地板覆盖率 ≥ FR_MIN_FLOOR_RATIO 即可装。
@@ -171,7 +188,9 @@ function frOrientationFloorRatio(o, container) {
  */
 function frFloorFeasible(item, container) {
   if (!container || container.type !== 'flatRack') return true;
-  return getOrientations(item).some(o => frOrientationFloorRatio(o, container) >= FR_MIN_FLOOR_RATIO);
+  const lmax = Math.max(item.l, item.w, item.h);
+  if (lmax > frLengthLimit(container) + 1e-9) return false; // 2026-10-15：超装载上限（含伸出容限）
+  return getOrientations(item).some(o => frOrientationValid(o, container));
 }
 
 /**
@@ -352,20 +371,23 @@ function validateItem(item, container, currentTotalWeight = 0, tolerance = 0.05)
  * @returns {{frAllowed: boolean, overLength: boolean, rotated: boolean, reason: string}}
  */
 function checkFRLengthRule(item) {
-  const frL = CONTAINER_DB['40FR'].L;
-  const dims = [item.l, item.w, item.h];
-  const overCount = dims.filter(d => d > frL).length;
+  const fr20 = CONTAINER_DB['20FR'];
+  const fr40 = CONTAINER_DB['40FR'];
+  const lmax = Math.max(item.l, item.w, item.h);
 
-  if (overCount >= 1) {
+  if (lmax > frLengthLimit(fr40) + 1e-9) {
     return {
-      frAllowed: true,
-      overLength: true,
-      rotated: false,
-      reason: `最长边 ${Math.max(...dims).toFixed(2)}m 超过 40FR 内长 ${frL}m，作为超长货贴端装载`
+      frAllowed: false, overLength: true, rotated: false, tier: 'none',
+      reason: `最长边 ${lmax.toFixed(2)}m 超出框架柜装载上限（40FR 柱间长 ${fr40.L}m + 伸出容限 ${FR_OVERHANG_ALLOWANCE_M}m），无法装载该货物`
     };
   }
-
-  return { frAllowed: true, overLength: false, rotated: false, reason: '' };
+  if (lmax > fr20.L + 1e-9) {
+    return {
+      frAllowed: true, overLength: true, rotated: false, tier: '40FR',
+      reason: `最长边 ${lmax.toFixed(2)}m 超出 20FR 柱间长 ${fr20.L}m，需 40FR${lmax > fr40.L + 1e-9 ? '（贴端伸出装载）' : ''}`
+    };
+  }
+  return { frAllowed: true, overLength: false, rotated: false, tier: '20FR', reason: '' };
 }
 
 function hasValidOrientationForContainer(item, container, tolerance = 0.05) {
@@ -378,8 +400,10 @@ function hasValidOrientationForContainer(item, container, tolerance = 0.05) {
   // 门截面直接取该候选朝向自身的 w×h（与 checkDoorConstraint 的容差公式一致：w ≤ doorW−t+t = doorW）。
   return getOrientations(item).some(o => {
     if (container.type === 'flatRack') {
-      // 2026-10-13 口径：FR 不设尺寸限制——单件可装性 = 贴角放置地板覆盖率 ≥ 阈值（与引擎放置链一致）
-      return frOrientationFloorRatio(o, container) >= FR_MIN_FLOOR_RATIO;
+      // 2026-10-15 口径：长度限定（最长边 ≤ 柱间长+伸出容限）+ 平放限定（竖立边 ≤ 箱内长）+ 地板覆盖率。
+      const lmax = Math.max(item.l, item.w, item.h);
+      if (lmax > frLengthLimit(container) + 1e-9) return false;
+      return frOrientationValid(o, container);
     }
     if (o.l > eff.maxL || o.w > eff.maxW || o.h > eff.maxH) return false;
     if (container.type === 'openTop') {
@@ -432,10 +456,10 @@ function classifyItemByContainerType(item, tolerance = 0.05) {
     }
   }
 
-  // 4. 检查框架柜（无门约束；2026-10-13 口径：不设尺寸限制，单件可行性 = 地板覆盖率判据）
+  // 4. 检查框架柜（无门约束；2026-10-15 口径：长度限定 + 平放限定 + 地板覆盖率）
   const frRule = checkFRLengthRule(item);
 
-  if (frFloorFeasible(item, fr40)) {
+  if (frRule.frAllowed && frFloorFeasible(item, fr40)) {
     item._frOverLength = frRule.overLength;
     item._frRotated = frRule.rotated;
     return 'FR';
@@ -469,9 +493,16 @@ function recommendContainer(items, tolerance = 0.05) {
   // 逐件分类
   const classifications = items.map(item => classifyItemByContainerType(item, tolerance));
 
-  // 检查是否有无法装载的货物
-  if (classifications.some(c => c === 'none')) {
-    return null;
+  // 无法装载的货物：2026-10-15 口径——给出明确警告原因（超长上限/地板支撑不足），不静默
+  const noneIdx = classifications.findIndex(c => c === 'none');
+  if (noneIdx >= 0) {
+    const noneItem = items[noneIdx];
+    const frRule = checkFRLengthRule(noneItem);
+    const lmax = Math.max(noneItem.l, noneItem.w, noneItem.h);
+    const reason = !frRule.frAllowed
+      ? `⚠️ 无法装载该货物：「${noneItem.model || '货物'}」${frRule.reason}`
+      : `⚠️ 无法装载该货物：「${noneItem.model || '货物'}」最长边 ${lmax.toFixed(2)}m，尺寸超出可用箱型或框架柜地板支撑不足`;
+    return { needsMixed: true, reason };
   }
 
   const gp20 = CONTAINER_DB['20GP'];
@@ -494,11 +525,9 @@ function recommendContainer(items, tolerance = 0.05) {
   let alternatives = [];
 
   if (needsFR) {
-    // 必须用框架柜
+    // 必须用框架柜（2026-10-15 长度限定口径：超 20FR 柱间长 → 40FR；超 40FR 上限 → 警告）
     const fr20 = CONTAINER_DB['20FR'];
     const fr40 = CONTAINER_DB['40FR'];
-    const fr20Eff = getEffectiveMaxDims(fr20, tolerance);
-    const fr40Eff = getEffectiveMaxDims(fr40, tolerance);
 
     const allFit20FR = items.every(item => hasValidOrientationForContainer(item, fr20, tolerance));
     const weightFit20FR = totalWeight <= fr20.payload;
@@ -513,8 +542,19 @@ function recommendContainer(items, tolerance = 0.05) {
       if (allFit40FR && weightFit40FR) {
         primary = fr40;
         alternatives = [fr20];
-        reasoning.push('货物尺寸/单件重量需要框架柜，40FR可装载');
+        const lmax = Math.max(...items.map(i => Math.max(i.l, i.w, i.h)));
+        if (lmax > fr20.L + 1e-9) {
+          reasoning.push(`货物最长边 ${lmax.toFixed(2)}m 超出 20FR 柱间长 ${fr20.L}m，推荐 40FR${lmax > fr40.L + 1e-9 ? '（贴端伸出装载）' : ''}`);
+        } else if (items.some(i => i.weight > fr20.payload)) {
+          reasoning.push(`单件重量超出 20FR 载重（${fr20.payload}kg），推荐 40FR`);
+        } else {
+          reasoning.push('货物尺寸/单件重量需要框架柜，40FR可装载');
+        }
       } else {
+        const lmax = Math.max(...items.map(i => Math.max(i.l, i.w, i.h)));
+        if (lmax > frLengthLimit(fr40) + 1e-9) {
+          return { needsMixed: true, reason: `⚠️ 无法装载该货物：最长边 ${lmax.toFixed(2)}m 超出框架柜装载上限（40FR 柱间长 ${fr40.L}m + 伸出容限 ${FR_OVERHANG_ALLOWANCE_M}m）` };
+        }
         return { needsMixed: true, reason: '单箱框架柜无法装载所有货物，需多箱装载' };
       }
     }
@@ -854,7 +894,10 @@ window.ContainerDB = {
   TIER,
   getEffectiveMaxDims,
   frFloorFeasible,
+  frLengthLimit,
+  frOrientationValid,
   FR_MIN_FLOOR_RATIO,
+  FR_OVERHANG_ALLOWANCE_M,
   checkSizeConstraints,
   checkDoorConstraint,
   checkWeightConstraint,

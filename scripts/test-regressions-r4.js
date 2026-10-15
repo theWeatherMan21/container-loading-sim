@@ -197,18 +197,20 @@ test('C-N1 planner totalHeight 高度约束生效（每箱≤30）', () => {
 });
 
 // ═══════════════════════════════════════════
-// 9) payload：20' 载重物理边界（ISO 668 口径）
+// 9) payload：官方载重值（2026-10-15 爹地拍板：FR 取官方值）
 // ═══════════════════════════════════════════
-test('payload 20GP/20OT/20FR/40FR 物理边界', () => {
-  const expected = { '20GP': 28200, '20OT': 28100, '20FR': 27500, '40FR': 39600 };
+test('payload 20GP/20OT/20FR/40FR 载重口径', () => {
+  const expected = { '20GP': 28200, '20OT': 28100, '20FR': 31260, '40FR': 44050 };
   for (const [code, value] of Object.entries(expected)) {
     assert(CDB.CONTAINER_DB[code] && CDB.CONTAINER_DB[code].payload === value,
       `${code}.payload = ${CDB.CONTAINER_DB[code] && CDB.CONTAINER_DB[code].payload}，期望 ${value}`);
   }
-  // 物理下限：20' 总重 ≤ 30480 - 自重 2200 → payload 必须 < 30000
-  for (const code of ['20GP', '20OT', '20FR']) {
+  // 普柜物理下限：20' 总重 ≤ 30480 - 自重 → payload 必须 < 30000（20GP/20OT 口径）
+  for (const code of ['20GP', '20OT']) {
     assert(CDB.CONTAINER_DB[code].payload < 30000, `${code}.payload ${CDB.CONTAINER_DB[code].payload} 超 20' 物理上限`);
   }
+  // FR 重载柜按官方规格（Hapag-Lloyd）取 31,260 / 44,050——不受 20' 普柜 ISO 668 口径约束
+  assert(CDB.CONTAINER_DB['40FR'].payload > CDB.CONTAINER_DB['20FR'].payload, '40FR 载重应大于 20FR');
 });
 
 // ═══════════════════════════════════════════

@@ -43,6 +43,7 @@
     selectedUnit: 'cm',       // 'mm' | 'cm' | 'm'
     // Step 3 ephemeral state
     skuOverrides: {},         // { model: { stackable, orientationFixed } }
+    allow6Way: true,          // 2026-10-15（爹地）：允许 6 面翻转（可侧放/倒置）；取消 = 全部货物仅水平旋转
     // Manual entry state
     manualItems: []           // manually entered cargo items
   };
@@ -102,6 +103,7 @@
     if (step !== 4 && state._calculating) {
       calcGeneration++;
       if (activeCalcHandle) { activeCalcHandle.cancel(); activeCalcHandle = null; }
+      cancelCalcWorker();
       state._calculating = false;
     }
     for (let i = 1; i <= 4; i++) {
@@ -261,6 +263,30 @@
     }
   }
 
+  // 2026-10-15（性能 P1-7）：装箱主计算的独立 Worker（每次计算独立生命周期，结束即终止，互不串台）
+  let calcWorker = null;
+  let calcWorkerRequestId = 0;
+
+  function getCalcWorker() {
+    if (typeof Worker === 'undefined') return null;
+    if (!calcWorker) {
+      try {
+        calcWorker = new Worker('recommendation-worker.js');
+      } catch (error) {
+        console.warn('[startCalculation] Worker unavailable:', error.message);
+        return null;
+      }
+    }
+    return calcWorker;
+  }
+
+  function cancelCalcWorker() {
+    if (calcWorker) {
+      calcWorker.terminate();
+      calcWorker = null;
+    }
+  }
+
   /**
    * Simulate progress while synchronous calculation runs.
    * Uses setTimeout chains to yield to the browser between ticks.
@@ -273,7 +299,7 @@
     '⚙️ EMS 装箱计算…',
     '🔍 承重与边界自检…'
   ];
-  function simulateProgress(_durationMs, onDone) {
+  function showCalcProgress() {
     // Indeterminate 脉冲进度条，不显示虚假百分比
     const bar = $('progress-bar');
     if (bar) {
@@ -291,23 +317,13 @@
         status.textContent = CALC_PHASES[phaseIdx];
       }, 900);
     }
-
-    // 延迟启动真实计算，确保 UI 渲染；返回可取消句柄供作废
-    let handle = null;
-    const timeoutId = setTimeout(() => {
-      if (phaseTimer) clearInterval(phaseTimer);
-      // callback fired, handle is stale - drop the reference so future invalidation is clean
-      if (activeCalcHandle === handle) activeCalcHandle = null;
-      if (onDone) onDone();
-    }, 100);
-
-    handle = {
+    // 2026-10-15（性能 P1-7）：计算已迁入 Worker，主线程只维持进度动画；
+    // 返回 cancel 句柄（作废时清除阶段轮播）。
+    return {
       cancel() {
         if (phaseTimer) clearInterval(phaseTimer);
-        clearTimeout(timeoutId);
       }
     };
-    return handle;
   }
 
   // ═══════════════════════════════════════════
@@ -1115,6 +1131,16 @@
       });
     }
 
+    // 2026-10-15（爹地）：全局「允许 6 面翻转」勾选（默认开；取消 = 全部货物仅水平旋转）
+    const allow6WayInput = $('allow-6way-checkbox');
+    if (allow6WayInput && !allow6WayInput.dataset.bound) {
+      allow6WayInput.dataset.bound = '1';
+      allow6WayInput.checked = state.allow6Way !== false;
+      allow6WayInput.addEventListener('change', function () {
+        state.allow6Way = this.checked;
+      });
+    }
+
     // SKU table
     renderSkuTable();
 
@@ -1396,7 +1422,7 @@
   }
 
   // ── 分支 B: 推荐失败 ──
-  function renderFailedRecommendation(recEl, altEl) {
+  function renderFailedRecommendation(recEl, altEl, failureReason) {
     // 推荐失败时清空旧的箱型选择，防止新货物静默沿用旧 containerSpec 计算；
     // 调用链后方的 ensureCalculateButton() 会依据清空后的状态禁用计算按钮
     state.containerSpec = null;
@@ -1407,6 +1433,10 @@
     const allContainers = CDB.CONTAINER_LIST;
     let manualHtml = '<div style="background:#FFF9E6;border:1px solid #E8D5A0;border-radius:12px;padding:16px;">';
     manualHtml += '<div style="font-weight:600;color:#8B7516;margin-bottom:8px;">⚠️ 自动推荐失败，请手动选择箱型：</div>';
+    // 2026-10-15（爹地口径）：展示明确失败原因（如「无法装载该货物：超装载上限」），不静默
+    if (failureReason) {
+      manualHtml += `<div style="margin-bottom:10px;padding:10px;background:#FDEDEC;border:1px solid #E6B0AA;border-radius:10px;color:#943126;font-size:13px;line-height:1.6;">${escapeHtml(failureReason)}</div>`;
+    }
     manualHtml += '<div style="display:flex;gap:6px;flex-wrap:wrap;" id="manual-btn-group">';
     for (const c of allContainers) {
       manualHtml += `<button class="manual-container-btn" data-code="${c.code}"
@@ -1709,7 +1739,7 @@
               console.warn('[refreshContainerRecommendation] simulation failed:', simErr.message);
             }
             if (!recommendation || recommendation.type === 'failed') {
-              renderFailedRecommendation(recEl, altEl);
+              renderFailedRecommendation(recEl, altEl, recommendation && recommendation.reasoning);
             } else if (recommendation.type === 'mixed') {
               renderMixedRecommendation(recommendation.mixed, recEl, altEl);
             } else {
@@ -1755,7 +1785,7 @@
       }
 
       if (!recommendation || recommendation.type === 'failed') {
-        renderFailedRecommendation(recEl, altEl);
+        renderFailedRecommendation(recEl, altEl, recommendation && recommendation.reasoning);
       } else if (recommendation.type === 'mixed') {
         renderMixedRecommendation(recommendation.mixed, recEl, altEl);
       } else {
@@ -1806,63 +1836,102 @@
         return;
       }
 
-      // Apply SKU overrides to items
+      // Apply SKU overrides to items（2026-10-15：叠加数据界面全局「允许 6 面翻转」勾选；
+      // 取消勾选 = 全部货物仅水平旋转，逐件「仅可水平旋转」勾选保持其固定含义）
+      const allow6Way = state.allow6Way !== false;
       const itemsWithOverrides = state.items.map(item => {
         const override = state.skuOverrides[item.model];
-        if (override) {
-          return { ...item, stackable: override.stackable, orientationFixed: override.orientationFixed };
-        }
-        return item;
+        const base = override
+          ? { ...item, stackable: override.stackable, orientationFixed: override.orientationFixed }
+          : { ...item };
+        if (!allow6Way) base.orientationFixed = true;
+        return base;
       });
 
-      // Show indeterminate progress, then do actual calculation
+      // 2026-10-15（性能 P1-7）：装箱计算默认在独立 Worker 内执行（大订单不再冻结主线程）；
+      // Worker 不可用或运行失败时回退主线程同步计算（保持原行为）。
       // app#6：携带 generation token；若计算期间 resetState / 离开流程，gen 失配，
       // 回调直接放弃（不渲染、不跳转、不篡改 _calculating——由作废方负责复位）。
       const gen = ++calcGeneration;
-      activeCalcHandle = simulateProgress(100, () => {
-        if (gen !== calcGeneration) return; // 竞态：计算已作废
+      const useMixed = state.useMixed && state.containerSpecs && state.containerSpecs.length > 0;
+      const calcOptions = {
+        tolerance: state.tolerance,
+        autoRetry: true
+      };
+      if (useMixed) {
+        calcOptions.mixedContainers = state.containerSpecs;
+      }
+      const containerSpecOrNull = useMixed ? null : state.containerSpec;
+      if (!useMixed && !containerSpecOrNull) {
+        hideProgress();
+        state._calculating = false;
+        showError('箱型规格丢失，请返回上一步重新确认 🥛');
+        return;
+      }
+
+      activeCalcHandle = showCalcProgress();
+
+      const finishWithResult = (result) => {
+        state.packingResult = result;
+        hideProgress();
+        // Render Step 4
+        renderStep4();
+        showStep(4);
+        state._calculating = false;
+      };
+      const failCalculation = (message) => {
+        hideProgress();
+        state._calculating = false;
+        showError('装箱计算失败：' + (message || '未知错误') + '，请尝试调整参数 🥛');
+        appendRestartButton('step-3');
+      };
+      const runSyncCalculation = () => {
         try {
-          // 检测混合装箱模式
-          const useMixed = state.useMixed && state.containerSpecs && state.containerSpecs.length > 0;
-          const calcOptions = {
-            tolerance: state.tolerance,
-            autoRetry: true
-          };
-          if (useMixed) {
-            calcOptions.mixedContainers = state.containerSpecs;
-          }
-
-          const containerSpecOrNull = useMixed ? null : state.containerSpec;
-          if (!useMixed && !containerSpecOrNull) {
-            hideProgress();
-            state._calculating = false;
-            showError('箱型规格丢失，请返回上一步重新确认 🥛');
-            return;
-          }
-
-          const result = PE.calculate(
-            itemsWithOverrides,
-            containerSpecOrNull,
-            calcOptions
-          );
-
-          state.packingResult = result;
-          hideProgress();
-
-          // Render Step 4
-          renderStep4();
-          showStep(4);
-          state._calculating = false;
-
+          const result = PE.calculate(itemsWithOverrides, containerSpecOrNull, calcOptions);
+          if (gen !== calcGeneration) return; // 竞态：计算已作废
+          finishWithResult(result);
         } catch (calcErr) {
-          hideProgress();
-          state._calculating = false;
+          if (gen !== calcGeneration) return;
           console.error('Calculation error:', calcErr);
-          showError('装箱计算失败：' + (calcErr.message || '未知错误') + '，请尝试调整参数 🥛');
-          // 添加重新开始按钮
-          appendRestartButton('step-3');
+          failCalculation(calcErr.message);
         }
-      });
+      };
+
+      const calcWorkerInstance = getCalcWorker();
+      if (calcWorkerInstance) {
+        const requestId = ++calcWorkerRequestId;
+        calcWorkerInstance.onmessage = (event) => {
+          const message = event.data || {};
+          if (message.requestId !== requestId) return;
+          calcWorkerInstance.onmessage = null;
+          calcWorkerInstance.onerror = null;
+          if (gen !== calcGeneration) { cancelCalcWorker(); return; }
+          cancelCalcWorker();
+          if (message.type === 'calculate-result') {
+            finishWithResult(message.result);
+          } else {
+            console.warn('[startCalculation] worker error:', message.message, '→ 回退主线程');
+            runSyncCalculation();
+          }
+        };
+        calcWorkerInstance.onerror = (error) => {
+          calcWorkerInstance.onerror = null;
+          calcWorkerInstance.onmessage = null;
+          cancelCalcWorker();
+          if (gen !== calcGeneration) return;
+          console.warn('[startCalculation] worker unavailable:', (error && error.message) || error, '→ 回退主线程');
+          runSyncCalculation();
+        };
+        calcWorkerInstance.postMessage({
+          type: 'calculate',
+          requestId,
+          items: itemsWithOverrides,
+          containerSpec: containerSpecOrNull,
+          options: calcOptions
+        });
+      } else {
+        runSyncCalculation();
+      }
 
     } catch (err) {
       hideProgress();
@@ -2553,6 +2622,8 @@
       // 旧 onDone 即使已进入队列也会因 token 失配而放弃渲染/跳转。
       calcGeneration++;
       if (activeCalcHandle) { activeCalcHandle.cancel(); activeCalcHandle = null; }
+      // 2026-10-15：一并作废在途的装箱计算 Worker
+      cancelCalcWorker();
       // 作废并终止仍在运行的推荐预演，避免重置后旧结果写回新的界面状态。
       recSimToken++;
       cancelRecommendationWorker();

@@ -229,15 +229,18 @@ test('APP-2 映射表含净重/描述（静态契约）', () => {
 });
 
 // ═══════════════════════════════════════════
-// 8) APP-3（静态契约）：simulateProgress 返回可取消句柄
+// 8) APP-3（静态契约）：计算进度可取消 + 作废链路闭环（2026-10-15 Worker 化后更新）
 // ═══════════════════════════════════════════
-test('APP-3 simulateProgress 可取消（静态契约）', () => {
-  // 取消句柄必须真实清除 setTimeout（否则旧回调仍会触发 onDone → 竞态）
-  assert(APP_SRC.includes('cancel() {'), 'simulateProgress 缺失 cancel() 句柄');
-  assert(APP_SRC.includes('clearTimeout(timeoutId)'), 'cancel 必须 clearTimeout(timeoutId)');
-  assert(APP_SRC.includes('return handle'), 'simulateProgress 必须返回取消句柄');
+test('APP-3 计算进度句柄可取消 + 作废链路闭环（静态契约）', () => {
+  // 进度动画句柄必须真实清除 setInterval（phaseTimer），取消后不再轮播文案
+  assert(APP_SRC.includes('function showCalcProgress()'), '缺失 showCalcProgress 进度动画');
+  assert(APP_SRC.includes('cancel() {'), 'showCalcProgress 缺失 cancel() 句柄');
+  assert(APP_SRC.includes('clearInterval(phaseTimer)'), 'cancel 必须 clearInterval(phaseTimer)');
   // 在途句柄须被全局持有，供 showStep/resetState 作废（app#6 竞态防护闭环）
   assert(APP_SRC.includes('activeCalcHandle'), '缺失 activeCalcHandle 在途句柄');
+  // 2026-10-15：主计算迁入 Worker 后，作废链路 = generation token + calcWorker.terminate()
+  assert(APP_SRC.includes('cancelCalcWorker()'), '缺失 cancelCalcWorker 作废入口');
+  assert(APP_SRC.includes('gen !== calcGeneration'), 'Worker 回调必须校验 generation token');
 });
 
 // ═══════════════════════════════════════════

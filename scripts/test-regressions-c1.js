@@ -125,14 +125,18 @@ test('C1-TOL0 tolerance=0（零间隙）不被改写为 0.05', () => {
 // ═══════════════════════════════════════════
 // 5) P1-1：重货推荐链（单件超普柜载重 → 40FR）
 // ═══════════════════════════════════════════
-test('C1-REC 单件超普柜载重 → 推荐 40FR（不再给 20GP×N）', () => {
+test('C1-REC 单件超普柜载重 → FR 链（2026-10-15 官方载重口径）', () => {
+  // 2026-10-15 更新：FR 载重改官方值（20FR 31,260 / 40FR 44,050）——30t 单件落 20FR、33t 落 40FR
   const rec = CDB.autoRecommend([{ model: 'M', l: 2, w: 2, h: 2, weight: 30000, quantity: 1 }], 0.05);
-  assert(rec.type === 'single' && rec.primary && rec.primary.code === '40FR',
-    `30t 单件应推荐 40FR，实际 type=${rec.type} primary=${rec.primary && rec.primary.code}`);
-  const r = PE.calculate([{ model: 'M', l: 2, w: 2, h: 2, weight: 30000, quantity: 1 }], '40FR');
-  assert(r.totalPlaced === 1, '30t → 40FR 实算应装入');
-  const rec2 = CDB.autoRecommend([{ model: 'M', l: 2, w: 2, h: 2, weight: 40000, quantity: 1 }], 0.05);
-  assert(rec2.type === 'failed', `40t 单件应为 failed，实际 ${rec2.type}`);
+  assert(rec.type === 'single' && rec.primary && rec.primary.code === '20FR',
+    `30t 单件应推荐 20FR，实际 type=${rec.type} primary=${rec.primary && rec.primary.code}`);
+  const r = PE.calculate([{ model: 'M', l: 2, w: 2, h: 2, weight: 30000, quantity: 1 }], '20FR');
+  assert(r.totalPlaced === 1, '30t → 20FR 实算应装入');
+  const rec33 = CDB.autoRecommend([{ model: 'M', l: 2, w: 2, h: 2, weight: 33000, quantity: 1 }], 0.05);
+  assert(rec33.type === 'single' && rec33.primary && rec33.primary.code === '40FR',
+    `33t 单件应推荐 40FR，实际 type=${rec33.type} primary=${rec33.primary && rec33.primary.code}`);
+  const rec2 = CDB.autoRecommend([{ model: 'M', l: 2, w: 2, h: 2, weight: 45000, quantity: 1 }], 0.05);
+  assert(rec2.type === 'failed', `45t 单件应为 failed，实际 ${rec2.type}`);
   assert(/无法装入任何单箱/.test(rec2.reasoning || ''), `文案应说明无法装单箱，实际 ${rec2.reasoning}`);
 });
 
