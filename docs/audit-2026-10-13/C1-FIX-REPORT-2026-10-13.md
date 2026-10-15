@@ -34,6 +34,7 @@
 | 5 | P1-1 30t 单件推荐"20GP×2"（物理不可行） | `container-db.js`：单件超普柜载重 → 走 40FR 推荐链；混推组同步（超重货并入 FR 组）；文案更新 | C1-REC；E2E C3（推荐 40FR → 实算 1 箱装入） |
 | 6 | UI 死锁：混合勾选被重置 / 按钮 disabled / 失败无去处 | `app.js`：`ensureCalculateButton` 三处补齐 + 混合面板就地显示 | E2E A3（勾选保持 useMixed=true、按钮可用、5 箱全装） |
 | 7 | 文案：无重量列谎称"体积估算" | 改为「所有货物按 0kg 处理，**载重校验不会生效**」 | C1-MSG |
+| 8 | LIVE SUMMARY 面板半成品：`#context-utilization`/`#context-unloaded` 全项目无人赋值，永远显示 `--` | `app.js`：`renderResultSummary` 末尾联动（装载率/未装数/风险线三态）；`styles.css`：新增 `.risk-line__dot--ok` | C1-CTX（静态契约）+ E2E A3-top（面板显示 63.2% / 0 件 / 绿点"无风险，方案可执行 ✓"） |
 
 **未动（第二批待爹地拍板）**：FR payload 口径（27.5t/39.6t vs 官方 31.26t/44.05t）、6 向翻转默认（2.6m 高货横放）、皮重+VGM 输出、性能拐点（万件级）。
 
@@ -53,7 +54,12 @@ node scripts/test-all.js  →  ✅ 全部 18 个测试套件通过（EXIT=0）
 | C3 30t 重货 | 推荐 20GP×2 → 算 0 箱 | 推荐 40FR → **1 箱装入** |
 | D3 13m 超长货 | 分类 FR 但装不了 | **全链路装成**（1 箱） |
 
-截图：`docs/audit-2026-10-13/cls-e2e-A3-fixed.png` / `cls-e2e-C3-fixed.png` / `cls-e2e-D3-fixed.png`（已归档同目录）。
+截图：`docs/audit-2026-10-13/cls-e2e-A3-fixed.png` / `cls-e2e-C3-fixed.png` / `cls-e2e-D3-fixed.png`（已归档同目录）；
+顶部整页视口图 `cls-e2e-A3-top.png`（KPI 四卡全清晰 + LIVE SUMMARY 联动可见）。
+
+**两个"疑似问题"的排查附注（均非缺陷，2026-10-13 晚）**：
+1. KPI 数字"重影"——是 `fadeInUp` 进场动画进行中的截帧；等待动画结束后清晰可读（复拍确认）。
+2. 全页截图中 sticky 头部与 KPI 行"重叠"——全页截图对 sticky/fixed 元素的合成伪影；DOM 实测（`elementsFromPoint`/`getBoundingClientRect`）无重叠，滚回顶部后正常显示。
 
 ### 可重跑命令
 ```bash

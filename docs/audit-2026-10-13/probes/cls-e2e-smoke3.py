@@ -32,7 +32,7 @@ def wait_result(pg, timeout=60000):
         const el = document.querySelector('#result-summary');
         return el && (el.innerText || '').includes('所需箱数');
     }""", timeout=timeout)
-    pg.wait_for_timeout(500)
+    pg.wait_for_timeout(2500)
 
 with sync_playwright() as p:
     b = p.chromium.launch(headless=True, executable_path=EXE)

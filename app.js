@@ -1995,6 +1995,27 @@
         `);
       }
     }
+
+    // C1.1（2026-10-13）：LIVE SUMMARY 面板联动——结果摘要同步到右侧上下文栏
+    // （此前 #context-utilization / #context-unloaded 为永不过期的 "--" 占位，属半成品面板）
+    const ctxUtil = $('context-utilization');
+    if (ctxUtil) ctxUtil.textContent = `${(result.avgUtilization * 100).toFixed(1)}%`;
+    const ctxUnloaded = $('context-unloaded');
+    if (ctxUnloaded) ctxUnloaded.textContent = `${result.unplacedCount || 0} 件`;
+    const riskLine = document.querySelector('.context-panel[data-context-step="4"] .risk-line');
+    if (riskLine) {
+      const dot = riskLine.querySelector('.risk-line__dot');
+      const txt = riskLine.querySelector('span:last-child');
+      const errCount = (result.checks || []).reduce((s, ch) => s + (ch.errors ? ch.errors.length : 0), 0);
+      const warnCount = (result.checks || []).reduce((s, ch) => s + (ch.warnings ? ch.warnings.length : 0), 0);
+      const hasIssue = errCount > 0 || (result.unplacedCount || 0) > 0;
+      if (dot && txt) {
+        dot.classList.toggle('risk-line__dot--ok', !hasIssue && warnCount === 0);
+        txt.textContent = hasIssue
+          ? `发现 ${errCount + ((result.unplacedCount || 0) > 0 ? 1 : 0)} 项风险，请核对下方明细`
+          : (warnCount > 0 ? `基本无风险（${warnCount} 条提示）` : '无风险，方案可执行 ✓');
+      }
+    }
   }
 
   function renderContainerTabs(result) {

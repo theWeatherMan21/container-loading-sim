@@ -177,4 +177,15 @@ test('C1-MSG 无重量列文案说明载重校验失效', () => {
     `警告应说明载重校验失效，实际 ${JSON.stringify(res.warnings)}`);
 });
 
+// ═══════════════════════════════════════════
+// 8) LIVE SUMMARY 面板联动（静态契约，2026-10-13 C1.1）
+// ═══════════════════════════════════════════
+test('C1-CTX LIVE SUMMARY 面板联动（静态契约）', () => {
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+  assert(/context-utilization/.test(src), '结果摘要应写入 #context-utilization');
+  assert(/context-unloaded/.test(src), '结果摘要应写入 #context-unloaded');
+  assert(/risk-line__dot--ok/.test(src), '风险线应支持 ok 态');
+});
+
 console.log(`\n═══ test-regressions-c1 完成：${passed} 通过 / ${failed} 失败（共 ${assertCount} 条断言）═══`);

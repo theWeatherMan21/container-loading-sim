@@ -557,6 +557,7 @@ select option {
 .context-callout { padding: 13px; margin-bottom: 12px; background: color-mix(in srgb, var(--accent) 8%, var(--card)); border-left: 3px solid var(--accent); }
 .risk-line { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--text-secondary); font-size: 12px; }
 .risk-line__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warning); flex: 0 0 auto; }
+.risk-line__dot--ok { background: var(--success); }
 .context-export { margin-top: 14px; width: 100%; min-height: 40px; justify-content: space-between; border-color: var(--border); }
 
 .result-summary {
