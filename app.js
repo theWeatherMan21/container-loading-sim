@@ -1716,22 +1716,28 @@
               if (oneBoxFit && oneBoxFit.code !== recommendation.primary.code) {
                 const promoted = CDB.CONTAINER_DB[oneBoxFit.code];
                 if (promoted) {
+                  // 2026-10-15（C3 · 修复 P2-5）：先存原推荐码——原实现先覆盖 primary 再拼“优于原推荐”，
+                  // 文案里显示的会是新箱型（"X 优于原推荐 X"）。
+                  const prevCode = recommendation.primary.code;
+                  const prevSim = simulation.find(s => s.code === prevCode);
                   recommendation.primary = promoted;
                   recommendation.reasoning =
                     `实际装箱验证：${oneBoxFit.code} 可单箱装完全部 ${oneBoxFit.totalItems} 件货物，` +
-                    `优于原推荐 ${recommendation.primary.code}（需 ${(simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount || '?'} 箱）。`;
+                    `优于原推荐 ${prevCode}${prevSim && prevSim.containerCount != null ? `（需 ${prevSim.containerCount} 箱）` : ''}。`;
                   recommendation.promotedBySimulation = true;
                 }
               }
               const bestSim = simulation.find(s => s.feasible);
+              const curSim = simulation.find(s => s.code === recommendation.primary.code);
               if (bestSim && bestSim.code !== recommendation.primary.code &&
-                  bestSim.containerCount < (simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount) {
+                  bestSim.containerCount < (curSim || {}).containerCount) {
                 const promoted = CDB.CONTAINER_DB[bestSim.code];
                 if (promoted) {
+                  const prevCode = recommendation.primary.code;
                   recommendation.primary = promoted;
                   recommendation.reasoning =
                     `实际装箱预演：${bestSim.code} 仅需 ${bestSim.containerCount} 箱装完，` +
-                    `优于原推荐 ${recommendation.primary.code}（需 ${(simulation.find(s => s.code === recommendation.primary.code) || {}).containerCount || '?'} 箱）。`;
+                    `优于原推荐 ${prevCode}${curSim && curSim.containerCount != null ? `（需 ${curSim.containerCount} 箱）` : ''}。`;
                   recommendation.promotedBySimulation = true;
                 }
               }

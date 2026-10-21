@@ -1072,6 +1072,46 @@ const PackingEngine = (() => {
       }
     }
 
+    // ═══ 未装件重排重试 pass（2026-10-15 C3 · 修复复审 P1-6「空间充足却漏装」）═══
+    // 典型病灶：smart 排序把不可叠大件排到最后 → 小件先铺满地面 → 大件在 z=0 无整块地面、
+    // 叠放又被承重闸门拦下 → 明明有空间却漏装（实测 60×0.4m 小件 + 1×1.2³ 大件：单遍仅 60/61）。
+    // 处置：把未装件排到最前（input-order 重装一遍）；仅在「装得更多」时采纳（严格改进，绝不劣化）。
+    // 成本闸门（RETRY_UTIL_THRESHOLD）：仅对低利用率箱重试——满载箱的未装件本就是「溢出到下一箱」，
+    // 重试无收益却要整箱重装（实测密集场景空跑会让耗时 +30~60%）。
+    const RETRY_UTIL_THRESHOLD = 0.6;
+    if (unplacedItems.length > 0 && !options._retryPass) {
+      const placedVolume = placedItems.reduce((s, p) => s + p.l * p.w * p.h, 0);
+      const boxVolume = container.L * container.W * container.H;
+      const currentUtil = boxVolume > CONSTANTS.EPS ? placedVolume / boxVolume : 0;
+      if (currentUtil < RETRY_UTIL_THRESHOLD) {
+        const recoverItem = (src) => ({
+          model: src.model,
+          l: src.origL != null ? src.origL : src.l,
+          w: src.origW != null ? src.origW : src.w,
+          h: src.origH != null ? src.origH : src.h,
+          weight: src.weight,
+          stackable: src.stackable,
+          orientationFixed: src.orientationFixed === true,
+          maxStackWeight: src.maxStackWeight,
+          colorIndex: src.colorIndex,
+          quantity: 1
+        });
+        const retryItems = [
+          ...unplacedItems.map(recoverItem),
+          ...placedItems.map(recoverItem)
+        ];
+        const retried = packSingleContainer(retryItems, container, {
+          ...options,
+          sortStrategy: 'input-order',
+          _retryPass: true
+        });
+        if (retried.placedItems.length > placedItems.length) {
+          retried.recoveredByRetry = true;
+          return retried;
+        }
+      }
+    }
+
     const packed = [];
     const oversized = [];
     for (const item of placedItems) {
@@ -1808,9 +1848,11 @@ const PackingEngine = (() => {
     const effDims = getEffectiveMaxDims(container, tolerance);
     const outOfBounds = [];
     for (const item of placedItems) {
-      if (item.x + item.l > effDims.maxL + tolerance) outOfBounds.push(`${item.model} X方向超界`);
-      if (item.y + item.w > effDims.maxW + tolerance) outOfBounds.push(`${item.model} Y方向超界`);
-      if (item.z + item.h > effDims.maxH + tolerance) outOfBounds.push(`${item.model} Z方向超界`);
+      // 2026-10-15（C3 · 统一 P2-4）：与放置路径同口径——effDims 已扣过 tolerance，
+      // 原实现再 + tolerance 会让自检比放置宽 5cm（可能漏报真实越界）。
+      if (item.x + item.l > effDims.maxL + CONSTANTS.EPS) outOfBounds.push(`${item.model} X方向超界`);
+      if (item.y + item.w > effDims.maxW + CONSTANTS.EPS) outOfBounds.push(`${item.model} Y方向超界`);
+      if (item.z + item.h > effDims.maxH + CONSTANTS.EPS) outOfBounds.push(`${item.model} Z方向超界`);
     }
     if (outOfBounds.length > 0) {
       errors.push({ type: 'outOfBounds', message: '货物超出容器边界', details: outOfBounds.slice(0, 5) });

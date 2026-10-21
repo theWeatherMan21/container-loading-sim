@@ -3,10 +3,11 @@
 // 口径说明：使用「原生直载」（window=global，无 vm 沙箱）——与浏览器/Worker 真实环境一致；
 // vm 沙箱会把重对象运算放大约 10~30 倍，bench 数字请以本脚本为准。
 // 运行：node scripts/bench-dense-perf.js [1|2|3]
+const path = require('path');
 global.window = global;
-require('./container-db.js');
-require('./planner.js');
-require('./packing-engine.js');
+require(path.join(__dirname, '..', 'container-db.js'));
+require(path.join(__dirname, '..', 'planner.js'));
+require(path.join(__dirname, '..', 'packing-engine.js'));
 const CDB = window.ContainerDB;
 const PE = window.PackingEngine;
 
