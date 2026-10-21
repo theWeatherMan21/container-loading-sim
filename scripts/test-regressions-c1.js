@@ -143,11 +143,12 @@ test('C1-REC 单件超普柜载重 → FR 链（2026-10-15 官方载重口径）
 // ═══════════════════════════════════════════
 // 6) FR 解除尺寸限制（2026-10-13 口径：不设尺寸限制 + 地板覆盖率物理底线）
 // ═══════════════════════════════════════════
-test('C1-FR1 FR 超长货可装（13m，贴端 + 地板覆盖判据 + 超长标记）', () => {
-  assert(CDB.classifyItemByContainerType({ l: 13, w: 1, h: 1, weight: 100 }) === 'FR', '13m 货应分类 FR');
-  const r = PE.calculate([{ model: 'LONG', l: 13, w: 1, h: 1, weight: 3000, quantity: 1 }], '40FR');
-  assert(r.totalPlaced === 1, '13m 应可装 40FR');
-  assert(r.containers[0].placedItems[0].overLength === true, '13m 货应带超长标记');
+test('C1-FR1 FR 超长货可装（悬挑装载 + 地板覆盖判据 + 超长标记）', () => {
+  // 2026-10-21 爹地分档：13m/3t 走 45HQ（更经济、免 OOG 审批）；FR 取证改用 13.6m（超 45HQ 优先上限 13.5m）
+  assert(CDB.classifyItemByContainerType({ l: 13, w: 1, h: 1, weight: 100 }) === '45HQ', '13m 货应分类 45HQ');
+  const r = PE.calculate([{ model: 'LONG', l: 13.6, w: 1, h: 1, weight: 3000, quantity: 1 }], '40FR');
+  assert(r.totalPlaced === 1, '13.6m 应可装 40FR（贴端悬挑）');
+  assert(r.containers[0].placedItems[0].overLength === true, '13.6m 货应带超长标记');
 });
 
 test('C1-FR2 FR 超宽货可装（3.5m 宽）', () => {

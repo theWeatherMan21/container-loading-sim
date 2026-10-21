@@ -47,12 +47,26 @@ test('C2-PAYLOAD FR 载重取官方值（31,260 / 44,050）', () => {
 // ═══════════════════════════════════════════
 // 2) FR 长度限定：分层 + 平放 + 超限警告
 // ═══════════════════════════════════════════
-test('C2-FR-TIER 13m 管 → 推荐 40FR（不得竖放塞 20FR）', () => {
+test('C2-FR-TIER 超长货分档：12–13.5m 走 45HQ（不竖放塞 20FR），>13.5m 走 40FR 悬挑', () => {
+  // 2026-10-21 爹地分档（替代 10-15「13m→40FR」单档口径）
   const rec = CDB.autoRecommend([{ model: 'P13', l: 13, w: 1, h: 1, weight: 3000, quantity: 1 }], 0.05);
-  assert(rec.type === 'single' && rec.primary && rec.primary.code === '40FR',
-    `13m 应推荐 40FR，实际 ${rec.type}/${rec.primary && rec.primary.code}`);
-  assert(/超出 20FR 柱间长/.test(rec.reasoning || ''), `原因应含“超出 20FR 柱间长”，实际 ${rec.reasoning}`);
-  assert(/贴端伸出装载/.test(rec.reasoning || ''), `13m 超 40FR 柱间长，应注明贴端伸出，实际 ${rec.reasoning}`);
+  assert(rec.type === 'single' && rec.primary && rec.primary.code === '45HQ',
+    `13m（3t）应推荐 45HQ，实际 ${rec.type}/${rec.primary && rec.primary.code}`);
+  assert(rec.primary.code !== '20FR', '13m 不应被竖放塞进 20FR');
+  assert(/45HQ/.test(rec.reasoning || '') && /平放/.test(rec.reasoning || ''),
+    `原因应说明 45HQ 平放装载，实际 ${rec.reasoning}`);
+
+  // 13.6m（超 45HQ 优先上限 13.5m）→ 40FR 贴端悬挑
+  const recOver = CDB.autoRecommend([{ model: 'P13.6', l: 13.6, w: 1, h: 1, weight: 3000, quantity: 1 }], 0.05);
+  assert(recOver.type === 'single' && recOver.primary && recOver.primary.code === '40FR',
+    `13.6m 应推荐 40FR，实际 ${recOver.type}/${recOver.primary && recOver.primary.code}`);
+  assert(/贴端悬挑/.test(recOver.reasoning || ''), `13.6m 应注明贴端悬挑，实际 ${recOver.reasoning}`);
+
+  // 15.2m（每端悬挑 1.77m）→ 40FR + 船司特批提示
+  const recFar = CDB.autoRecommend([{ model: 'P15.2', l: 15.2, w: 1, h: 1, weight: 3000, quantity: 1 }], 0.05);
+  assert(recFar.type === 'single' && recFar.primary && recFar.primary.code === '40FR',
+    `15.2m 应推荐 40FR，实际 ${recFar.type}/${recFar.primary && recFar.primary.code}`);
+  assert(/船司特批|超限审批/.test(recFar.reasoning || ''), `15.2m 应提示需船司特批，实际 ${recFar.reasoning}`);
 });
 
 test('C2-FR-TIER2 6m 货（20FR 长度外）→ 40FR', () => {
@@ -67,13 +81,18 @@ test('C2-FR-TIER3 5.5m 货（20FR 可装）→ 20FR', () => {
     `5.5m 应推荐 20FR，实际 ${rec.type}/${rec.primary && rec.primary.code}`);
 });
 
-test('C2-FR-WARN 14m 货（超 40FR 上限）→ 警告无法装载该货物', () => {
-  const item = { model: 'P14', l: 14, w: 1, h: 1, weight: 3000, quantity: 1 };
-  assert(CDB.classifyItemByContainerType({ ...item }) === 'none', '14m 应分类 none');
+test('C2-FR-WARN 16.2m 货（超 40FR 悬挑上限 16m）→ 警告无法装载该货物', () => {
+  const item = { model: 'P16.2', l: 16.2, w: 1, h: 1, weight: 3000, quantity: 1 };
+  assert(CDB.classifyItemByContainerType({ ...item }) === 'none', '16.2m 应分类 none');
   const rec = CDB.autoRecommend([{ ...item }], 0.05);
-  assert(rec.type === 'failed', `14m 应为 failed，实际 ${rec.type}`);
+  assert(rec.type === 'failed', `16.2m 应为 failed，实际 ${rec.type}`);
   assert(/无法装载该货物/.test(rec.reasoning || ''), `文案应含“无法装载该货物”，实际 ${rec.reasoning}`);
   assert(/超出框架柜装载上限/.test(rec.reasoning || ''), `文案应含“超出框架柜装载上限”，实际 ${rec.reasoning}`);
+
+  // 14m 曾经也判超限——2026-10-21 起 40FR 悬挑覆盖 14–16m（每端 ≤1.5m 常规），必须能装
+  const p14 = CDB.autoRecommend([{ model: 'P14', l: 14, w: 1, h: 1, weight: 3000, quantity: 1 }], 0.05);
+  assert(p14.type === 'single' && p14.primary && p14.primary.code === '40FR',
+    `14m 应推荐 40FR（悬挑覆盖 14–16m），实际 ${p14.type}/${p14.primary && p14.primary.code}`);
 });
 
 test('C2-FR-STAND 平放限定：13m 手选 20FR 装不了；40FR 平放（h=1）+ 超长标记', () => {

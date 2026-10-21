@@ -127,7 +127,19 @@ const FR_FREE_DIM = 1e3;
 //   ① 分层：货物最长边 ≤ 20FR 柱间长 → 20FR；超过 → 40FR；
 //      超过 40FR 柱间长 + 伸出容限 → 警告「无法装载该货物」；
 //   ② 平放：竖立边（朝向的 h）不得超过箱内长——最长边必须水平放置，禁止“竖放塞小箱”。
-const FR_OVERHANG_ALLOWANCE_M = 2.0; // 40FR 伸出容限（超出柱间长、允许贴端伸出的部分，单位 m）
+const FR_OVERHANG_ALLOWANCE_M = 2.0; // 40FR 常规伸出容限（每端 ≤1m，最长 13.652m）
+
+// 2026-10-21 爹地拍板分档（45HQ vs 40FR）：
+//   ① ≤12.0m（40HQ 装得下）→ 不推 45HQ/FR；
+//   ② 12.0–13.0m 且单件 ≤20t → 45HQ 优先（比 40FR 便宜，且不用走 OOG 超限审批）；
+//   ③ 13.0–13.5m → 45HQ 属边缘方案：端部绑扎/楔块余量小，主推 45HQ 但提示核实箱内长并备选 40FR；
+//   ④ >13.5m / 超宽 / 裸装大件 / 需悬挑 → 锁 40FR；40FR 悬挑覆盖至 16m
+//      （每端 ≤1.5m 属常规超限，再长需船司特批）。
+const HQ45_MAX_CARGO_LENGTH_M = 13.5;     // 45HQ 优先区间上限（超过即走 40FR 悬挑档）
+const HQ45_EDGE_MIN_LENGTH_M = 13.0;      // ≥13.0m 起为「边缘方案」——需提示绑扎余量 + 备选 40FR
+const HQ45_MAX_ITEM_WEIGHT_KG = 20000;    // 单件 >20t 不走 45HQ（船司常限约 26t，规划留余量）
+const FR_ROUTINE_PER_END_M = 1.5;         // 40FR 每端常规悬挑上限（合计 3m → 14.652m）
+const FR_TOTAL_LENGTH_CEILING_M = 16.0;   // 40FR 悬挑装载上限（再长需特种运输）
 
 /**
  * 获取单件货物对某箱型的有效尺寸上限
@@ -167,10 +179,18 @@ function frOrientationFloorRatio(o, container) {
   return (Math.min(o.l, L) / o.l) * (Math.min(o.w, W) / o.w);
 }
 
-/** FR 装载长度上限（含伸出容限）：20FR = 柱间长；40FR = 柱间长 + FR_OVERHANG_ALLOWANCE_M。 */
+/** FR 装载长度硬上限（含全部悬挑）：20FR = 柱间长；40FR = FR_TOTAL_LENGTH_CEILING_M（16m）。
+ *  常规/特批的差别只在推荐层提示（checkFRLengthRule.requiresApproval），布局本身允许到硬上限。 */
 function frLengthLimit(container) {
   if (!container || container.type !== 'flatRack') return Infinity;
-  return container.L + (container.code === '40FR' ? FR_OVERHANG_ALLOWANCE_M : 0);
+  if (container.code === '40FR') return FR_TOTAL_LENGTH_CEILING_M;
+  return container.L;
+}
+
+/** 40FR 常规悬挑长度上限（每端 ≤1.5m）：柱间长 + 2×1.5m = 14.652m。 */
+function frRoutineLengthLimit(container) {
+  if (!container || container.code !== '40FR') return frLengthLimit(container);
+  return container.L + 2 * FR_ROUTINE_PER_END_M;
 }
 
 /** FR 朝向有效性（2026-10-15 口径）：竖立边 ≤ 箱内长（禁竖放）且贴角地板覆盖率 ≥ 阈值。 */
@@ -365,29 +385,36 @@ function validateItem(item, container, currentTotalWeight = 0, tolerance = 0.05)
 }
 
 /**
- * FR 超长标记（2026-10-13 口径：FR 不设尺寸限制后，本函数不再参与任何拦截，
- * 仅保留“超长货”标记供 3D 标注与提示使用）。
- * @param {object} item - {l, w, h}
- * @returns {{frAllowed: boolean, overLength: boolean, rotated: boolean, reason: string}}
+ * FR 超长判定与分档（2026-10-21 爹地分档口径）：
+ *   ≤5.612m → 20FR；≤11.652m → 40FR 平放；≤13.652m → 40FR 常规悬挑（每端 ≤1m）；
+ *   ≤14.652m → 40FR 悬挑（每端 ≤1.5m，仍属常规超限）；≤16m → 40FR（需船司特批/超限审批）；
+ *   >16m → 无法装载（需特种运输）。
+ * @returns {{frAllowed:boolean, overLength:boolean, rotated:boolean, tier:'20FR'|'40FR'|'none', requiresApproval:boolean, reason:string}}
  */
 function checkFRLengthRule(item) {
   const fr20 = CONTAINER_DB['20FR'];
   const fr40 = CONTAINER_DB['40FR'];
   const lmax = Math.max(item.l, item.w, item.h);
 
-  if (lmax > frLengthLimit(fr40) + 1e-9) {
+  if (lmax > FR_TOTAL_LENGTH_CEILING_M + 1e-9) {
     return {
-      frAllowed: false, overLength: true, rotated: false, tier: 'none',
-      reason: `最长边 ${lmax.toFixed(2)}m 超出框架柜装载上限（40FR 柱间长 ${fr40.L}m + 伸出容限 ${FR_OVERHANG_ALLOWANCE_M}m），无法装载该货物`
+      frAllowed: false, overLength: true, rotated: false, tier: 'none', requiresApproval: false,
+      reason: `最长边 ${lmax.toFixed(2)}m 超出框架柜装载上限（40FR 悬挑覆盖至 ${FR_TOTAL_LENGTH_CEILING_M}m），无法装载该货物`
     };
   }
   if (lmax > fr20.L + 1e-9) {
+    const overhang = Math.max(0, lmax - fr40.L);
+    const perEnd = overhang / 2;
+    const requiresApproval = perEnd > FR_ROUTINE_PER_END_M + 1e-9;
+    const tail = lmax > fr40.L + 1e-9
+      ? `（每端悬挑约 ${perEnd.toFixed(2)}m${requiresApproval ? '，超出常规 1.5m——需船司特批/超限审批' : '，属常规超限'}）`
+      : '';
     return {
-      frAllowed: true, overLength: true, rotated: false, tier: '40FR',
-      reason: `最长边 ${lmax.toFixed(2)}m 超出 20FR 柱间长 ${fr20.L}m，需 40FR${lmax > fr40.L + 1e-9 ? '（贴端伸出装载）' : ''}`
+      frAllowed: true, overLength: lmax > fr40.L + 1e-9, rotated: false, tier: '40FR', requiresApproval,
+      reason: `最长边 ${lmax.toFixed(2)}m 超出 20FR 柱间长 ${fr20.L}m，需 40FR${tail}`
     };
   }
-  return { frAllowed: true, overLength: false, rotated: false, tier: '20FR', reason: '' };
+  return { frAllowed: true, overLength: false, rotated: false, tier: '20FR', requiresApproval: false, reason: '' };
 }
 
 function hasValidOrientationForContainer(item, container, tolerance = 0.05) {
@@ -419,18 +446,27 @@ function getAvailableContainerTypes(item, containers, tolerance = 0.05) {
 }
 
 /**
- * 判断单件货物最低要求的箱型类别（按经济优先级）
- * @param {object} item - {l, w, h, weight}
- * @param {number} tolerance
- * @returns {'20GP'|'40HQ'|'OT'|'FR'|'none'} 最低要求箱型类别
+ * 单件货物的最低箱型类别（分类阶梯）
+ *
+ * 阶梯（2026-10-21 爹地分档）：
+ *   20GP → 40HQ → 45HQ（≤13.5m）→ OT → FR（≤16m 悬挑）→ none
+ * 45HQ 参与单件分类：内长 13.556m 是标准柜里最大的，11.982–13.5m 的货
+ * （如 12.5m 桥架/管材）用 45HQ 一箱装得下，比 40FR 便宜且不用走 OOG 超限审批。
+ * 13.5m 以上、超宽或需悬挑的货仍走 40FR（悬挑覆盖至 16m，每端 ≤1.5m 常规）。
+ * 单件重量门槛（≤20t）在推荐层判定——分类只管几何。
+ *
+ * @returns {'20GP'|'40HQ'|'45HQ'|'OT'|'FR'|'none'} 最低要求箱型类别
  */
 function classifyItemByContainerType(item, tolerance = 0.05) {
   const gp20 = CONTAINER_DB['20GP'];
   const hq40 = CONTAINER_DB['40HQ'];
+  const hq45 = CONTAINER_DB['45HQ'];
   const fr40 = CONTAINER_DB['40FR'];
 
-  // 超长优先：任一边超过 40FR 内长，直接按 FR 规则判定（用户要求“仅长超则优先考虑 FR”）
-  const hasOverLengthDim = item.l > fr40.L || item.w > fr40.L || item.h > fr40.L;
+  // 超长优先：任一边超过 45HQ 优先区间上限（13.5m），直接按 FR 规则判定
+  // （45HQ 在 13.0–13.5m 已是边缘方案，13.5m 以上锁 40FR 悬挑）。
+  const standardMaxInnerLen = HQ45_MAX_CARGO_LENGTH_M;
+  const hasOverLengthDim = item.l > standardMaxInnerLen + 1e-9 || item.w > standardMaxInnerLen + 1e-9 || item.h > standardMaxInnerLen + 1e-9;
 
   if (!hasOverLengthDim) {
     // 1. 检查能否通过20GP门并fit有效尺寸
@@ -445,7 +481,13 @@ function classifyItemByContainerType(item, tolerance = 0.05) {
       if (hasValidOrientationForContainer(item, hq40, tolerance)) return '40HQ';
     }
 
-    // 3. 检查能否通过OT门（仅宽度约束）并fit有效尺寸
+    // 3. 45HQ（2026-10-15 C3 · P2-①）：标准柜最大内长的那一档，比 FR 常规且经济
+    const hq45Door = checkDoorConstraint(item, hq45, tolerance);
+    if (hq45Door.pass) {
+      if (hasValidOrientationForContainer(item, hq45, tolerance)) return '45HQ';
+    }
+
+    // 4. 检查能否通过OT门（仅宽度约束）并fit有效尺寸
     const ot20 = CONTAINER_DB['20OT'];
     const ot40 = CONTAINER_DB['40OT'];
     const ot20Door = checkDoorConstraint(item, ot20, tolerance);
@@ -456,7 +498,7 @@ function classifyItemByContainerType(item, tolerance = 0.05) {
     }
   }
 
-  // 4. 检查框架柜（无门约束；2026-10-15 口径：长度限定 + 平放限定 + 地板覆盖率）
+  // 5. 检查框架柜（无门约束；2026-10-15 口径：长度限定 + 平放限定 + 地板覆盖率）
   const frRule = checkFRLengthRule(item);
 
   if (frRule.frAllowed && frFloorFeasible(item, fr40)) {
@@ -519,6 +561,7 @@ function recommendContainer(items, tolerance = 0.05) {
   const needsFR = classifications.some(c => c === 'FR') || singleTooHeavyForStandard;
   const needsOT = classifications.some(c => c === 'OT');
   const needs40HQ = classifications.some(c => c === '40HQ');
+  const needs45HQ = classifications.some(c => c === '45HQ');
   const reasoning = [];
 
   let primary = null;
@@ -544,7 +587,11 @@ function recommendContainer(items, tolerance = 0.05) {
         alternatives = [fr20];
         const lmax = Math.max(...items.map(i => Math.max(i.l, i.w, i.h)));
         if (lmax > fr20.L + 1e-9) {
-          reasoning.push(`货物最长边 ${lmax.toFixed(2)}m 超出 20FR 柱间长 ${fr20.L}m，推荐 40FR${lmax > fr40.L + 1e-9 ? '（贴端伸出装载）' : ''}`);
+          const perEnd = Math.max(0, lmax - fr40.L) / 2;
+          const hangNote = lmax > fr40.L + 1e-9
+            ? `（贴端悬挑，每端约 ${perEnd.toFixed(2)}m${perEnd > FR_ROUTINE_PER_END_M + 1e-9 ? '，超出常规 1.5m——需船司特批/超限审批' : '，属常规超限'}）`
+            : '';
+          reasoning.push(`货物最长边 ${lmax.toFixed(2)}m 超出 20FR 柱间长 ${fr20.L}m，推荐 40FR${hangNote}`);
         } else if (items.some(i => i.weight > fr20.payload)) {
           reasoning.push(`单件重量超出 20FR 载重（${fr20.payload}kg），推荐 40FR`);
         } else {
@@ -553,7 +600,7 @@ function recommendContainer(items, tolerance = 0.05) {
       } else {
         const lmax = Math.max(...items.map(i => Math.max(i.l, i.w, i.h)));
         if (lmax > frLengthLimit(fr40) + 1e-9) {
-          return { needsMixed: true, reason: `⚠️ 无法装载该货物：最长边 ${lmax.toFixed(2)}m 超出框架柜装载上限（40FR 柱间长 ${fr40.L}m + 伸出容限 ${FR_OVERHANG_ALLOWANCE_M}m）` };
+          return { needsMixed: true, reason: `⚠️ 无法装载该货物：最长边 ${lmax.toFixed(2)}m 超出框架柜装载上限（40FR 悬挑覆盖至 ${FR_TOTAL_LENGTH_CEILING_M}m，再长需特种运输）` };
         }
         return { needsMixed: true, reason: '单箱框架柜无法装载所有货物，需多箱装载' };
       }
@@ -579,6 +626,47 @@ function recommendContainer(items, tolerance = 0.05) {
         reasoning.push('货物高度/重量超限，40OT开顶柜可装载');
       } else {
         return { needsMixed: true, reason: '单箱开顶柜无法装载所有货物，需多箱装载' };
+      }
+    }
+  } else if (needs45HQ) {
+    // 2026-10-21 爹地分档（45HQ vs 40FR）：
+    //   12.0–13.0m 且单件 ≤20t → 45HQ 优先（比 40FR 便宜、不走 OOG 超限审批）；
+    //   13.0–13.5m → 45HQ 属边缘方案：端部绑扎/楔块余量小，提示核实实际箱内长，并备选 40FR；
+    //   超重（>20t）或超 45HQ 门/尺寸 → 回退 40FR（载重 44.05t、可悬挑至 16m）。
+    const fr40 = CONTAINER_DB['40FR'];
+    const lmax = Math.max(...items.map(i => Math.max(i.l, i.w, i.h)));
+    const heaviest = Math.max(...items.map(i => i.weight || 0));
+    const allFit45HQ = items.every(item => hasValidOrientationForContainer(item, hq45, tolerance));
+    const weightFit45HQ = totalWeight <= hq45.payload && heaviest <= HQ45_MAX_ITEM_WEIGHT_KG;
+
+    if (allFit45HQ && weightFit45HQ) {
+      primary = hq45;
+      alternatives = [fr40, hq40];
+      if (lmax > HQ45_EDGE_MIN_LENGTH_M + 1e-9) {
+        reasoning.push(
+          `货物最长边 ${lmax.toFixed(2)}m 超出 40HQ 内长 ${hq40.L}m，45HQ（内长 ${hq45.L}m）可平放装入——` +
+          `但余量仅约 ${(hq45.L - lmax).toFixed(2)}m，端部绑扎/楔块空间吃紧：请先核实实际箱号内长与吊点、法兰等外扩尺寸；` +
+          `若无 45HQ 箱源或担心绑扎余量，可改用 40FR（贴端悬挑，同样可装）`
+        );
+      } else {
+        reasoning.push(
+          `货物最长边 ${lmax.toFixed(2)}m 超出 40HQ 内长 ${hq40.L}m，45HQ（内长 ${hq45.L}m）可平放装入——` +
+          `较 40FR 更经济，且无需超限（OOG）审批；单件应 ≤${HQ45_MAX_ITEM_WEIGHT_KG / 1000}t，并确认航线 45HQ 箱源`
+        );
+      }
+    } else {
+      const allFit40FR = items.every(item => hasValidOrientationForContainer(item, fr40, tolerance));
+      const weightFit40FR = totalWeight <= fr40.payload;
+      if (allFit40FR && weightFit40FR) {
+        primary = fr40;
+        alternatives = [hq45, CONTAINER_DB['20FR']];
+        reasoning.push(
+          weightFit45HQ
+            ? '45HQ 尺寸不足，40FR 框架柜可装载'
+            : `单件最重 ${(heaviest / 1000).toFixed(1)}t 超出 45HQ 规划载重（船司常限约 26t，规划按 ${HQ45_MAX_ITEM_WEIGHT_KG / 1000}t 留余量），改用 40FR（载重 ${fr40.payload}kg）`
+        );
+      } else {
+        return { needsMixed: true, reason: '货物超出 45HQ 范围且单箱框架柜无法装载所有货物，需多箱装载' };
       }
     }
   } else if (needs40HQ) {
@@ -725,9 +813,9 @@ function recommendMixedContainers(items, tolerance = 0.05) {
   );
   for (const item of items) {
     const cls = classifyItemByContainerType(item, tolerance);
-    if ((cls === '20GP' || cls === '40HQ') && item.weight > standardMaxPayload) {
+    if ((cls === '20GP' || cls === '40HQ' || cls === '45HQ') && item.weight > standardMaxPayload) {
       groupFR.push(item);
-    } else if (cls === '20GP' || cls === '40HQ') {
+    } else if (cls === '20GP' || cls === '40HQ' || cls === '45HQ') {
       groupStandard.push(item);
     } else if (cls === 'OT') {
       groupOT.push(item);
@@ -882,6 +970,53 @@ function analyzeRecommendationFailure(items, tolerance = 0.05) {
   return reasons;
 }
 
+/**
+ * 推荐提升文案生成（纯函数 · 2026-10-15 C3 修复 P2-⑥）
+ *
+ * 病灶：原实现在 app.js 里内联拼文案，且**先覆盖** recommendation.primary 再引用
+ * `recommendation.primary.code`——于是「优于原推荐」后面显示的其实是新箱型自己
+ * （实测出现「20FR 优于原推荐 20FR」「45HQ 优于原推荐 45HQ」）。
+ *
+ * 口径：文案里的「原推荐」必须取**提升前**的箱型码与箱数；提升值与原推荐值
+ * 相同时不得出现「优于原推荐 X」（那是对自己的比较，无信息量）。
+ *
+ * @param {object} p
+ * @param {'single-box'|'fewer-boxes'} p.mode - single-box：模拟退火确认单箱可装完；fewer-boxes：预演箱数更少
+ * @param {string} p.newCode - 提升后的箱型码
+ * @param {number} [p.newCount] - 提升后箱数（fewer-boxes 必填）
+ * @param {string} p.prevCode - 提升前的箱型码（原推荐）
+ * @param {number} [p.prevCount] - 提升前箱数
+ * @param {number} [p.totalItems] - 总件数（single-box 必填）
+ * @returns {{promoted: boolean, reasoning: string}}
+ */
+function buildPromotionReasoning(p) {
+  const params = p || {};
+  const newCode = params.newCode;
+  const prevCode = params.prevCode;
+  const promoted = Boolean(newCode) && newCode !== prevCode;
+
+  const base = params.mode === 'fewer-boxes'
+    ? `实际装箱预演：${newCode} 仅需 ${params.newCount} 箱装完`
+    : `实际装箱验证：${newCode} 可单箱装完全部 ${params.totalItems} 件货物`;
+
+  let reasoning;
+  if (promoted) {
+    // 分支 A：提升值 ≠ 原推荐值 —— 明写原推荐箱型与箱数（引用提升前的值，不是覆盖后的）
+    const prevCountText = params.prevCount == null ? '' : `（需 ${params.prevCount} 箱）`;
+    reasoning = `${base}，优于原推荐 ${prevCode}${prevCountText}。`;
+  } else {
+    // 分支 B：提升值 = 原推荐值 —— 只做「已验证」背书，绝不自比自
+    reasoning = `${base}（与原推荐一致，箱型未变更）。`;
+  }
+
+  // 防御：任何情况下不得出现「X 优于原推荐 X」
+  if (newCode && newCode === prevCode && reasoning.includes('优于原推荐')) {
+    reasoning = `${base}（与原推荐一致，箱型未变更）。`;
+  }
+
+  return { promoted, reasoning };
+}
+
 // 箱型分级映射（尾组合并 Q2 分级门控 · 单一来源）：
 // 数值越小越优先作为合并目标——普通干货箱在最前，特种箱按开顶→框架顺序兜底。
 // 键值与 CONTAINER_DB 中 type 字段严格对齐（'standard'|'openTop'|'flatRack'）。
@@ -898,6 +1033,12 @@ window.ContainerDB = {
   frOrientationValid,
   FR_MIN_FLOOR_RATIO,
   FR_OVERHANG_ALLOWANCE_M,
+  FR_TOTAL_LENGTH_CEILING_M,
+  FR_ROUTINE_PER_END_M,
+  HQ45_MAX_CARGO_LENGTH_M,
+  HQ45_EDGE_MIN_LENGTH_M,
+  HQ45_MAX_ITEM_WEIGHT_KG,
+  frRoutineLengthLimit,
   checkSizeConstraints,
   checkDoorConstraint,
   checkWeightConstraint,
@@ -911,5 +1052,6 @@ window.ContainerDB = {
   recommendContainer,
   recommendMixedContainers,
   analyzeRecommendationFailure,
+  buildPromotionReasoning,
   autoRecommend
 };
