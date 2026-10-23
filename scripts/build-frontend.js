@@ -18,7 +18,8 @@ const FRONTEND_FILES = [
   'three-viewer.js',
   'pdf-exporter.js',
   'tauri-plugin-bridge.js',
-  'recommendation-worker.js'
+  'recommendation-worker.js',
+  'version.js'
 ];
 
 function sha256(filePath) {
@@ -104,6 +105,17 @@ function downloadFile(url, dest) {
     fs.rmSync(dist, { recursive: true, force: true });
   }
   fs.mkdirSync(dist, { recursive: true });
+
+  // 版本号单一来源 = package.json：每次构建重写 version.js，前端页眉/页脚直接显示，
+  // 这样「装的是哪个版本」在界面上就能看到，不靠猜 Info.plist。
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const appVersion = pkg.version;
+  fs.writeFileSync(
+    path.join(root, 'version.js'),
+    `// 由 scripts/build-frontend.js 从 package.json 自动生成，请勿手改\nwindow.APP_VERSION = ${JSON.stringify(appVersion)};\n`,
+    'utf8'
+  );
+  console.log(`App version: ${appVersion}`);
 
   FRONTEND_FILES.forEach(file => copy(file));
 

@@ -25,6 +25,7 @@
       </div>
     </div>
     <div class="header__status"><span class="status-dot"></span><span>本地工作区</span><span class="status-divider"></span><span id="workspace-status">准备导入</span></div>
+    <span class="version-badge" id="app-version" title="当前安装版本">v—</span>
     <div class="theme-switcher" role="group" aria-label="主题切换">
       <button class="theme-btn active" data-theme="light" aria-label="浅色主题" title="浅色主题">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
@@ -270,7 +271,7 @@
 </div><!-- /.workspace -->
 
 <footer class="site-footer">
-  <p>The Robotary by MESA LLC. · 智能装箱模拟系统</p>
+  <p>The Robotary by MESA LLC. · 智能装箱模拟系统 · <span class="site-footer__version" id="app-version-footer" title="当前安装版本">v—</span></p>
 </footer>
 
 <!-- Hidden printable report -->
@@ -293,6 +294,7 @@
 </script>
 
 <!-- Application modules (global scripts, load order matters) -->
+<script src="version.js"></script>
 <script src="container-db.js"></script>
 <script src="field-parser.js"></script>
 <script src="planner.js"></script>
@@ -319,6 +321,16 @@
 <script src="pdf-exporter.js"></script>
 <script src="tauri-plugin-bridge.js"></script>
 <script src="app.js"></script>
+<script>
+  // 版本号显示（来源：package.json → version.js，构建时自动生成）
+  (function () {
+    var v = window.APP_VERSION || 'dev';
+    ['app-version', 'app-version-footer'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = 'v' + v;
+    });
+  })();
+</script>
 
 </body>
 </html>
