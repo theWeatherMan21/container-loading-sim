@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Morandi Design System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;0,9..144,700;1,9..144,400&family=Work+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    /* ═══════════════════════════════════════════════════════
+       Morandi Design System — CSS Variables & Themes
+       ═══════════════════════════════════════════════════════ */
+    :root {
+      /* Morandi base pigments (shared) */
+      --m-rook:  #B8A89A;
+      --m-taupe: #9C8B7D;
+      --m-sage:  #A8B6B1;
+      --m-sand:  #D4C5B9;
+      --m-clay:  #C4A882;
+      --m-dust:  #C97B7B;
+      --m-moss:  #7B9A7B;
+      --m-stone: #7A7570;
+
+      /* Light theme */
+      --bg-primary:   #F5F0EB;
+      --bg-secondary: #EDE7E0;
+      --bg-card:      #FFFFFF;
+      --bg-elevated:  #FAF8F5;
+      --text-primary:   #3C3A36;
+      --text-secondary: #7A7570;
+      --text-muted:     #A8A39D;
+      --accent:         #B8A89A;
+      --accent-hover:   #A59384;
+      --accent-contrast:#FFFFFF;
+      --border:         rgba(60, 58, 54, 0.10);
+      --border-strong:  rgba(60, 58, 54, 0.18);
+      --shadow:         0 18px 50px -12px rgba(60, 58, 54, 0.18);
+      --shadow-sm:      0 4px 14px rgba(60, 58, 54, 0.08);
+      --focus-ring:     rgba(184, 168, 154, 0.45);
+      --danger:         #C97B7B;
+      --success:        #7B9A7B;
+      --warning:        #C4A882;
+    }
+
+    [data-theme="dark"] {
+      --bg-primary:   #2A2826;
+      --bg-secondary: #33302D;
+      --bg-card:      #3C3A36;
+      --bg-elevated:  #45423E;
+      --text-primary:   #E8E4DF;
+      --text-secondary: #B5AFA8;
+      --text-muted:     #7A7570;
+      --accent:         #D4C5B9;
+      --accent-hover:   #E8DDD4;
+      --accent-contrast:#2A2826;
+      --border:         rgba(232, 228, 223, 0.10);
+      --border-strong:  rgba(232, 228, 223, 0.18);
+      --shadow:         0 24px 60px -12px rgba(0, 0, 0, 0.45);
+      --shadow-sm:      0 4px 16px rgba(0, 0, 0, 0.25);
+      --focus-ring:     rgba(212, 197, 185, 0.45);
+      --danger:         #D98A8A;
+      --success:        #93B093;
+      --warning:        #D6B896;
+    }
+
+    [data-theme="contrast"] {
+      --bg-primary:   #0F0F0F;
+      --bg-secondary: #1A1A1A;
+      --bg-card:      #141414;
+      --bg-elevated:  #1F1F1F;
+      --text-primary:   #F5F2EE;
+      --text-secondary: #D4CFC8;
+      --text-muted:     #8C8882;
+      --accent:         #E8DCC8;
+      --accent-hover:   #FFF5E6;
+      --accent-contrast:#0F0F0F;
+      --border:         rgba(245, 242, 238, 0.22);
+      --border-strong:  rgba(245, 242, 238, 0.45);
+      --shadow:         0 0 0 1px rgba(245, 242, 238, 0.12), 0 24px 60px -12px rgba(0,0,0,0.6);
+      --shadow-sm:      0 0 0 1px rgba(245, 242, 238, 0.12);
+      --focus-ring:     rgba(232, 220, 200, 0.65);
+      --danger:         #FF8A8A;
+      --success:        #A3D1A3;
+      --warning:        #F0C98F;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: 'Work Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      transition: background 0.6s cubic-bezier(0.4, 0, 0.2, 1),
+                  color 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+      overflow-x: hidden;
+      line-height: 1.6;
+    }
+
+    /* Page load reveal */
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(28px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .reveal {
+      opacity: 0;
+      animation: fadeInUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    /* Custom cursor follower (desktop only) */
+    .cursor-follower {
+      position: fixed;
+      width: 24px;
+      height: 24px;
+      border: 1.5px solid var(--accent);
+      border-radius: 50%;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      transition: width 0.25s ease, height 0.25s ease, background 0.25s ease, border-color 0.3s ease;
+      z-index: 9999;
+      mix-blend-mode: difference;
+      opacity: 0;
+    }
+
+    @media (pointer: fine) {
+      .cursor-follower { opacity: 0.6; }
+      body:hover .cursor-follower { opacity: 1; }
+      a:hover ~ .cursor-follower,
+      button:hover ~ .cursor-follower,
+      .card:hover ~ .cursor-follower { width: 48px; height: 48px; background: rgba(184, 168, 154, 0.12); }
+    }
+
+    /* Header */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(20px);
+      background: rgba(var(--bg-primary), 0.78);
+      border-bottom: 1px solid var(--border);
+      transition: background 0.5s ease, border-color 0.5s ease;
+    }
+
+    .header-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 1.25rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      font-family: 'Fraunces', serif;
+      font-size: 1.35rem;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+      color: var(--text-primary);
+    }
+
+    .brand span {
+      font-weight: 300;
+      font-style: italic;
+      color: var(--text-secondary);
+    }
+
+    /* Theme switcher */
+    .theme-switcher {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      transition: background 0.4s ease, border-color 0.4s ease;
+    }
+
+    .theme-btn {
+      position: relative;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      transition: color 0.3s ease, transform 0.2s ease, background 0.3s ease;
+    }
+
+    .theme-btn svg {
+      width: 18px;
+      height: 18px;
+      stroke-width: 1.8;
+      transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    .theme-btn:hover { color: var(--text-primary); transform: translateY(-2px); }
+    .theme-btn:hover svg { transform: rotate(12deg) scale(1.1); }
+
+    .theme-btn.active {
+      background: var(--bg-card);
+      color: var(--text-primary);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* Hero */
+    .hero {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 6rem 2rem 3rem;
+      text-align: center;
+    }
+
+    .hero h1 {
+      font-family: 'Fraunces', serif;
+      font-size: clamp(2.8rem, 7vw, 5.5rem);
+      font-weight: 300;
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+      margin-bottom: 1.25rem;
+    }
+
+    .hero h1 em {
+      font-style: italic;
+      color: var(--accent);
+      transition: color 0.5s ease;
+    }
+
+    .hero p {
+      max-width: 620px;
+      margin: 0 auto 2.5rem;
+      font-size: 1.15rem;
+      color: var(--text-secondary);
+      font-weight: 300;
+    }
+
+    /* Buttons */
+    .btn {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.55rem;
+      padding: 0.85rem 1.7rem;
+      font-family: 'Work Sans', sans-serif;
+      font-size: 0.92rem;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      border-radius: 12px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      overflow: hidden;
+      transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+                  box-shadow 0.3s ease,
+                  background 0.35s ease,
+                  color 0.35s ease,
+                  border-color 0.35s ease;
+      user-select: none;
+    }
+
+    .btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(255,255,255,0.28) 0%, transparent 55%);
+      opacity: 0;
+      transition: opacity 0.35s ease;
+      pointer-events: none;
+    }
+
+    .btn:hover::before { opacity: 1; }
+
+    .btn:active { transform: scale(0.97); }
+
+    .btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: var(--accent-contrast);
+      box-shadow: 0 8px 24px -8px color-mix(in srgb, var(--accent) 55%, transparent);
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 14px 34px -10px color-mix(in srgb, var(--accent) 65%, transparent);
+    }
+
+    .btn-secondary {
+      background: var(--bg-card);
+      color: var(--text-primary);
+      border-color: var(--border-strong);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-elevated);
+      border-color: var(--accent);
+      transform: translateY(-2px);
+      box-shadow: 0 10px 28px -10px color-mix(in srgb, var(--accent) 30%, transparent);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+      border-color: transparent;
+    }
+
+    .btn-ghost:hover {
+      color: var(--text-primary);
+      background: var(--bg-secondary);
+    }
+
+    .btn-icon {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      border-radius: 50%;
+    }
+
+    .btn svg {
+      width: 18px;
+      height: 18px;
+      stroke-width: 2;
+      transition: transform 0.3s ease;
+    }
+
+    .btn:hover svg { transform: translateX(2px); }
+    .btn-icon:hover svg { transform: rotate(12deg) scale(1.1); }
+
+    /* Ripple effect */
+    .ripple {
+      position: absolute;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.35);
+      transform: scale(0);
+      animation: ripple 0.6s linear;
+      pointer-events: none;
+    }
+
+    @keyframes ripple {
+      to { transform: scale(4); opacity: 0; }
+    }
+
+    /* Sections */
+    section {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 4rem 2rem;
+    }
+
+    .section-title {
+      font-family: 'Fraunces', serif;
+      font-size: 1.85rem;
+      font-weight: 400;
+      margin-bottom: 0.5rem;
+    }
+
+    .section-desc {
+      color: var(--text-secondary);
+      margin-bottom: 2.5rem;
+      max-width: 520px;
+    }
+
+    /* Cards */
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2rem;
+      box-shadow: var(--shadow-sm);
+      transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+                  box-shadow 0.4s ease,
+                  border-color 0.4s ease,
+                  background 0.5s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 4px;
+      background: linear-gradient(90deg, var(--accent), var(--m-sage));
+      opacity: 0.7;
+      transform: scaleX(0);
+      transform-origin: left;
+      transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .card:hover {
+      transform: translateY(-6px);
+      box-shadow: var(--shadow);
+      border-color: var(--border-strong);
+    }
+
+    .card:hover::after { transform: scaleX(1); }
+
+    .card h3 {
+      font-family: 'Fraunces', serif;
+      font-size: 1.3rem;
+      font-weight: 500;
+      margin-bottom: 0.6rem;
+    }
+
+    .card p {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+      line-height: 1.65;
+    }
+
+    /* Button showcase */
+    .showcase {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 2.5rem;
+      transition: background 0.5s ease, border-color 0.5s ease;
+    }
+
+    .showcase-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .showcase-row:last-child { margin-bottom: 0; }
+
+    .showcase-label {
+      min-width: 120px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+    }
+
+    /* Form controls */
+    .input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .input-group label {
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .input {
+      padding: 0.9rem 1.1rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border-strong);
+      border-radius: 12px;
+      color: var(--text-primary);
+      font-family: inherit;
+      font-size: 0.95rem;
+      transition: border-color 0.3s ease, box-shadow 0.3s ease, background 0.4s ease;
+      outline: none;
+    }
+
+    .input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px var(--focus-ring);
+    }
+
+    .input::placeholder { color: var(--text-muted); }
+
+    /* Toggle switch */
+    .toggle {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.75rem;
+      cursor: pointer;
+    }
+
+    .toggle input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-track {
+      width: 52px;
+      height: 28px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      position: relative;
+      transition: background 0.35s ease, border-color 0.35s ease;
+    }
+
+    .toggle-thumb {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      background: var(--text-muted);
+      border-radius: 50%;
+      transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
+                  background 0.35s ease;
+    }
+
+    .toggle input:checked + .toggle-track {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .toggle input:checked + .toggle-track .toggle-thumb {
+      transform: translateX(24px);
+      background: var(--accent-contrast);
+    }
+
+    /* Loading spinner */
+    .spinner {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 3px solid var(--border-strong);
+      border-top-color: var(--accent);
+      animation: spin 0.9s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .skeleton {
+      background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--bg-elevated) 50%, var(--bg-secondary) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.6s infinite;
+      border-radius: 8px;
+    }
+
+    @keyframes shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    /* Toast */
+    .toast-container {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      z-index: 200;
+    }
+
+    .toast {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 14px;
+      padding: 1rem 1.4rem;
+      box-shadow: var(--shadow);
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      transform: translateX(120%);
+      animation: slideIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      max-width: 340px;
+    }
+
+    @keyframes slideIn {
+      to { transform: translateX(0); }
+    }
+
+    .toast.out { animation: slideOut 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+    @keyframes slideOut {
+      to { transform: translateX(120%); opacity: 0; }
+    }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .header-inner { padding: 1rem 1.25rem; }
+      .hero { padding: 4rem 1.25rem 2rem; }
+      section { padding: 3rem 1.25rem; }
+      .showcase { padding: 1.5rem; }
+      .showcase-row { flex-direction: column; align-items: flex-start; }
+      .showcase-label { min-width: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="cursor-follower" id="cursor"></div>
+
+  <header class="reveal" style="animation-delay: 0.05s;">
+    <div class="header-inner">
+      <div class="brand">Morandi <span>Design</span></div>
+      <div class="theme-switcher" role="group" aria-label="Theme switcher">
+        <button class="theme-btn active" data-theme="light" aria-label="Light theme" title="浅色主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </button>
+        <button class="theme-btn" data-theme="dark" aria-label="Dark theme" title="深色主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <button class="theme-btn" data-theme="contrast" aria-label="High contrast theme" title="高对比度主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 0 20V2z"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1 class="reveal" style="animation-delay: 0.1s;">Soft, Refined, <em>Memorable</em></h1>
+      <p class="reveal" style="animation-delay: 0.2s;">一套以莫兰迪色系为基调、支持多主题切换、带有细腻微交互的前端界面设计系统。</p>
+      <div class="reveal" style="animation-delay: 0.3s;">
+        <button class="btn btn-primary" onclick="showToast('primary')">开始体验</button>
+        <button class="btn btn-secondary" onclick="showToast('secondary')">查看文档</button>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="section-title reveal" style="animation-delay: 0.35s;">按钮系统</h2>
+      <p class="section-desc reveal" style="animation-delay: 0.4s;">主要、次要、幽灵、图标按钮，以及加载、禁用状态，均带有精致的悬停与点击反馈。</p>
+      <div class="showcase reveal" style="animation-delay: 0.45s;">
+        <div class="showcase-row">
+          <span class="showcase-label">Primary</span>
+          <button class="btn btn-primary">主要操作</button>
+          <button class="btn btn-primary" disabled>禁用状态</button>
+          <button class="btn btn-primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            带图标
+          </button>
+        </div>
+        <div class="showcase-row">
+          <span class="showcase-label">Secondary</span>
+          <button class="btn btn-secondary">次要操作</button>
+          <button class="btn btn-secondary" disabled>禁用状态</button>
+          <button class="btn btn-secondary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7V4h3M4 17v3h3M20 7V4h-3M20 17v3h-3M9 9h6v6H9z"/></svg>
+            配置
+          </button>
+        </div>
+        <div class="showcase-row">
+          <span class="showcase-label">Ghost</span>
+          <button class="btn btn-ghost">幽灵按钮</button>
+          <button class="btn btn-ghost" disabled>禁用</button>
+        </div>
+        <div class="showcase-row">
+          <span class="showcase-label">Icon</span>
+          <button class="btn btn-secondary btn-icon" aria-label="Search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg></button>
+          <button class="btn btn-primary btn-icon" aria-label="Add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg></button>
+          <button class="btn btn-ghost btn-icon" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12h18M3 6h18M3 18h18"/></svg></button>
+        </div>
+        <div class="showcase-row">
+          <span class="showcase-label">Loading</span>
+          <button class="btn btn-primary" disabled><span class="spinner" style="width:18px;height:18px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:6px;"></span>加载中</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="section-title reveal" style="animation-delay: 0.5s;">卡片与加载</h2>
+      <p class="section-desc reveal" style="animation-delay: 0.55s;">卡片入场动画、悬停抬升、顶部渐变进度条，以及骨架屏加载效果。</p>
+      <div class="card-grid reveal" style="animation-delay: 0.6s;">
+        <div class="card">
+          <h3>响应式布局</h3>
+          <p>基于 CSS Grid 与 Flexbox 的流式布局，在手机、平板、桌面端均能保持优雅的间距与阅读体验。</p>
+        </div>
+        <div class="card">
+          <h3>主题变量</h3>
+          <p>所有颜色、阴影、边框均通过 CSS 自定义属性管理，切换主题时整页色彩平滑过渡，无闪烁。</p>
+        </div>
+        <div class="card">
+          <h3>微交互</h3>
+          <p>自定义光标跟随、按钮涟漪、页面加载渐显、Toast 滑入等细节，让界面触感如奶油般顺滑。</p>
+        </div>
+        <div class="card">
+          <h3>无障碍</h3>
+          <p>合理的对比度、焦点状态、ARIA 标签与键盘可操作，确保高级 aesthetics 不牺牲可用性。</p>
+        </div>
+      </div>
+      <div class="showcase reveal" style="animation-delay: 0.65s; margin-top: 2rem;">
+        <div class="showcase-row">
+          <span class="showcase-label">Skeleton</span>
+          <div style="flex:1; display:flex; flex-direction:column; gap:0.6rem;">
+            <div class="skeleton" style="height:18px;width:70%;"></div>
+            <div class="skeleton" style="height:14px;width:90%;"></div>
+            <div class="skeleton" style="height:14px;width:55%;"></div>
+          </div>
+        </div>
+        <div class="showcase-row">
+          <span class="showcase-label">Spinner</span>
+          <div class="spinner"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="section-title reveal" style="animation-delay: 0.7s;">表单与开关</h2>
+      <p class="section-desc reveal" style="animation-delay: 0.75s;">输入框焦点光环、Toggle 滑动切换，所有控件均融入莫兰迪色系。</p>
+      <div class="showcase reveal" style="animation-delay: 0.8s;">
+        <div class="showcase-row" style="align-items:stretch;">
+          <div style="flex:1; min-width:240px;">
+            <div class="input-group">
+              <label for="email">邮箱地址</label>
+              <input id="email" class="input" type="email" placeholder="hello@example.com" />
+            </div>
+            <div class="input-group">
+              <label for="note">备注</label>
+              <input id="note" class="input" type="text" placeholder="输入一些内容…" />
+            </div>
+          </div>
+          <div style="flex:1; min-width:240px; display:flex; flex-direction:column; gap:1.2rem; justify-content:center;">
+            <label class="toggle">
+              <input type="checkbox" checked />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span>启用通知</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span>深色模式跟随系统</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="reveal" style="animation-delay: 0.85s;">
+    Morandi Design System · Crafted with soft pixels
+  </footer>
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script>
+    /* Theme switching */
+    const themeBtns = document.querySelectorAll('.theme-btn');
+    themeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const theme = btn.dataset.theme;
+        document.documentElement.setAttribute('data-theme', theme);
+        themeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        localStorage.setItem('morandi-theme', theme);
+      });
+    });
+
+    const savedTheme = localStorage.getItem('morandi-theme') || 'light';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    themeBtns.forEach(b => b.classList.toggle('active', b.dataset.theme === savedTheme));
+
+    /* Custom cursor follower */
+    const cursor = document.getElementById('cursor');
+    let cx = 0, cy = 0, tx = 0, ty = 0;
+    document.addEventListener('mousemove', (e) => {
+      tx = e.clientX;
+      ty = e.clientY;
+    });
+    function animateCursor() {
+      cx += (tx - cx) * 0.12;
+      cy += (ty - cy) * 0.12;
+      cursor.style.left = cx + 'px';
+      cursor.style.top = cy + 'px';
+      requestAnimationFrame(animateCursor);
+    }
+    animateCursor();
+
+    /* Button ripple + spotlight */
+    document.querySelectorAll('.btn').forEach(btn => {
+      btn.addEventListener('mousemove', (e) => {
+        const rect = btn.getBoundingClientRect();
+        btn.style.setProperty('--mx', ((e.clientX - rect.left) / rect.width * 100) + '%');
+        btn.style.setProperty('--my', ((e.clientY - rect.top) / rect.height * 100) + '%');
+      });
+
+      btn.addEventListener('click', function (e) {
+        if (this.disabled) return;
+        const rect = this.getBoundingClientRect();
+        const ripple = document.createElement('span');
+        ripple.className = 'ripple';
+        const size = Math.max(rect.width, rect.height);
+        ripple.style.width = ripple.style.height = size + 'px';
+        ripple.style.left = (e.clientX - rect.left - size / 2) + 'px';
+        ripple.style.top = (e.clientY - rect.top - size / 2) + 'px';
+        this.appendChild(ripple);
+        setTimeout(() => ripple.remove(), 600);
+      });
+    });
+
+    /* Toast notifications */
+    function showToast(type) {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+      const messages = {
+        primary: '主要操作已触发',
+        secondary: '文档页面即将开放',
+        success: '操作成功',
+        danger: '发生错误'
+      };
+      toast.textContent = messages[type] || '提示消息';
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.classList.add('out');
+        toast.addEventListener('animationend', () => toast.remove());
+      }, 3000);
+    }
+
+    /* Re-trigger reveal on scroll */
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.style.animationPlayState = 'running';
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.reveal').forEach(el => {
+      el.style.animationPlayState = 'paused';
+      observer.observe(el);
+    });
+  </script>
+</body>
+</html>

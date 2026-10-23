@@ -1,0 +1,71 @@
+{
+  "node": "v26.8.1",
+  "generated_at": "2026-10-15T10:15:37.550Z",
+  "scenarios": [
+    {
+      "name": "mixed-400×40HQ",
+      "ms_all": [
+        204.2,
+        190.7,
+        188.8
+      ],
+      "ms_median": 190.7,
+      "fingerprint": "5faf71c88aeac0c73b8cb2577ae85a076e45b2627a6a1c173869428c1a8be48c",
+      "fingerprint_lines": 406,
+      "summary": {
+        "containers": 4,
+        "totalPlaced": 400,
+        "unplacedCount": 0,
+        "avgUtilization": 0.5447361372811417
+      }
+    },
+    {
+      "name": "mixed-800×40HQ",
+      "ms_all": [
+        2623.9,
+        2621.7,
+        2581.8
+      ],
+      "ms_median": 2621.7,
+      "fingerprint": "714587bf9ad26f9ce608462a5c1d18384340d0085c4b113a61f0a578ba3fbe7e",
+      "fingerprint_lines": 811,
+      "summary": {
+        "containers": 9,
+        "totalPlaced": 800,
+        "unplacedCount": 0,
+        "avgUtilization": 0.6135071550448119
+      }
+    },
+    {
+      "name": "fr-long×40FR",
+      "ms_all": [
+        10.4,
+        9.9,
+        9.9
+      ],
+      "ms_median": 9.9,
+      "fingerprint": "2b714aa36fb65a78fd49737ce91f2b5732d8ed702652787f8ec146f46b6802d9",
+      "fingerprint_lines": 51,
+      "summary": {
+        "containers": 2,
+        "totalPlaced": 47,
+        "unplacedCount": 0,
+        "avgUtilization": 0.6838923787138783
+      }
+    },
+    {
+      "name": "overlaps-6000",
+      "ms_all": [
+        2939.4,
+        3043.5,
+        2939.5
+      ],
+      "ms_median": 2939.5,
+      "fingerprint": "8743cf6a2685fc128a741b68cbf2f553d23964c7f5c392160be87d3c0b4a0c51",
+      "fingerprint_lines": 111349,
+      "summary": {
+        "overlaps": 111349
+      }
+    }
+  ]
+}

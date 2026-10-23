@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+src-tauri/target/
+
+# Build outputs
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# Test artifacts
+coverage/
+.nyc_output/
+
+# Generated test reports
+test-reports/
+
+# Desktop build artifacts
+*.dmg
+*.exe
+*.msi
+*.app
+
+# Auto-downloaded vendor
+vendor/html2canvas.min.js
+
+# Debug artifacts
+.dbg/
+debug-*.js
+debug-*.md
+
+# Planning artifacts
+docs/superpowers/plans/
+
+# Local test/QA artifacts (not part of the source tree)
+.playwright-cli/
+acceptance-r4-dist/
+python-legacy/

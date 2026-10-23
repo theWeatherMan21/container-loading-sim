@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Robotary · 智能装箱模拟系统</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='9' width='18' height='14' fill='none' stroke='%23176B87' stroke-width='3'/%3E%3Cpath d='M22 21l6-8' stroke='%23237A57' stroke-width='3'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="header">
+  <div class="header__inner">
+    <div class="header__brand">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true"><span></span><i></i></span>
+        <span>
+          <strong class="brand-name">The Robotary</strong>
+          <small class="brand-owner">by MESA LLC.</small>
+        </span>
+      </div>
+      <div class="header__product">
+        <h1 class="header__title">智能装箱模拟系统</h1>
+        <p class="header__subtitle">规划、校验并可视化您的装箱方案</p>
+      </div>
+    </div>
+    <div class="header__status"><span class="status-dot"></span><span>本地工作区</span><span class="status-divider"></span><span id="workspace-status">准备导入</span></div>
+    <span class="version-badge" id="app-version" title="当前安装版本">v—</span>
+    <div class="theme-switcher" role="group" aria-label="主题切换">
+      <button class="theme-btn active" data-theme="light" aria-label="浅色主题" title="浅色主题">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      </button>
+      <button class="theme-btn" data-theme="dark" aria-label="深色主题" title="深色主题">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <button class="theme-btn" data-theme="contrast" aria-label="高对比度主题" title="高对比度主题">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 0 20V2z"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="workspace" id="workspace-shell">
+
+  <!-- Step Indicators -->
+  <aside class="sidebar" aria-label="工作流程">
+    <div class="sidebar__heading"><span>工作流程</span><span class="sidebar__count">04</span></div>
+    <nav class="steps" id="step-indicators" aria-label="装箱流程">
+      <div class="steps__step steps__step--active" data-step="1" tabindex="0">
+        <span class="steps__number">1</span><span class="steps__copy"><span class="steps__label">导入货物</span><small>上传或手动录入</small></span>
+      </div>
+      <div class="steps__step" data-step="2" tabindex="0">
+        <span class="steps__number">2</span><span class="steps__copy"><span class="steps__label">确认数据</span><small>检查字段与单位</small></span>
+      </div>
+      <div class="steps__step" data-step="3" tabindex="0">
+        <span class="steps__number">3</span><span class="steps__copy"><span class="steps__label">装箱配置</span><small>选择箱型与规则</small></span>
+      </div>
+      <div class="steps__step" data-step="4" tabindex="0">
+        <span class="steps__number">4</span><span class="steps__copy"><span class="steps__label">结果检查</span><small>查看 3D 方案</small></span>
+      </div>
+    </nav>
+    <div class="sidebar__footer">
+      <span class="sidebar__eyebrow">SIMULATION WORKSPACE</span>
+      <p>从数据到方案，保持每一步可追溯。</p>
+    </div>
+  </aside>
+
+  <main class="main-workspace">
+
+  <!-- Progress -->
+  <div class="progress hidden" id="progress-bar">
+    <div class="progress__bar" style="width:0%"></div>
+  </div>
+  <p class="text-center text-muted hidden" id="progress-text"></p>
+  <p class="text-center hidden" id="calculation-status"></p>
+
+  <!-- ═══ Step 1: Upload ═══ -->
+  <div class="card" id="step-1">
+    <h3 class="card__title">Step 1: 上传装箱单</h3>
+    <div class="drop-zone" id="dropZone">
+      <div class="drop-zone__icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#B8A89A" stroke-width="1.5">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+        </svg>
+      </div>
+      <p class="drop-zone__text">拖拽 <strong>.xlsx / .xls / .csv</strong> 文件到此处</p>
+      <p class="drop-zone__hint">或点击选择文件 · 支持多个 Sheet 自动合并</p>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" style="display:none">
+    </div>
+
+    <div class="manual-entry" id="manualEntry">
+      <h4 class="manual-entry__title">或手动录入货物</h4>
+      <div class="manual-entry__form">
+        <div class="manual-entry__row">
+          <label class="manual-entry__field">
+            <span>型号</span>
+            <input type="text" id="manual-model" placeholder="如：Radial Beam">
+          </label>
+          <label class="manual-entry__field manual-entry__field--small">
+            <span>数量</span>
+            <input type="number" id="manual-quantity" value="1" min="1" step="1">
+          </label>
+        </div>
+        <div class="manual-entry__row">
+          <label class="manual-entry__field">
+            <span>长 (m)</span>
+            <input type="number" id="manual-length" placeholder="0.00" min="0" step="0.01">
+          </label>
+          <label class="manual-entry__field">
+            <span>宽 (m)</span>
+            <input type="number" id="manual-width" placeholder="0.00" min="0" step="0.01">
+          </label>
+          <label class="manual-entry__field">
+            <span>高 (m)</span>
+            <input type="number" id="manual-height" placeholder="0.00" min="0" step="0.01">
+          </label>
+          <label class="manual-entry__field">
+            <span>或体积 (m³)</span>
+            <input type="number" id="manual-volume" placeholder="0.00" min="0" step="0.001">
+            <small style="color:var(--text-muted);font-size:11px;">仅填体积时按立方体估算尺寸</small>
+          </label>
+        </div>
+        <div class="manual-entry__row">
+          <label class="manual-entry__field">
+            <span>毛重 (kg)</span>
+            <input type="number" id="manual-weight" placeholder="0" min="0" step="0.1">
+          </label>
+          <label class="manual-entry__field manual-entry__field--checkbox">
+            <input type="checkbox" id="manual-stackable" checked>
+            <span>可叠放</span>
+          </label>
+        </div>
+        <div class="manual-entry__actions">
+          <button class="btn-secondary" id="btn-add-manual" type="button">+ 添加货物</button>
+          <button class="btn-primary" id="btn-manual-calc" type="button" disabled>使用下方货物数据计算</button>
+        </div>
+      </div>
+      <div class="manual-entry__list" id="manualList"></div>
+    </div>
+  </div>
+
+  <!-- ═══ Step 2: Data Confirmation ═══ -->
+  <div class="card hidden" id="step-2">
+    <h3 class="card__title">Step 2: 确认装箱数据</h3>
+    <div id="parsed-summary"></div>
+
+    <div class="mt-4">
+      <h4 class="card__subtitle">列映射</h4>
+      <div class="table-wrapper">
+        <table class="table" id="column-mapping-table">
+          <thead><tr><th>列</th><th>表头</th><th>映射为</th><th>样本值</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="mt-4" id="multi-size-warnings"></div>
+
+    <div class="mt-4" id="unit-selector"></div>
+
+    <div class="mt-4">
+      <h4 class="card__subtitle">数据预览（前10行）</h4>
+      <div class="table-wrapper" id="data-preview"></div>
+    </div>
+
+    <div class="mt-4 flex justify-between items-center">
+      <button class="btn-secondary btn-reupload" onclick="App.goToStep(1)">← 重新上传</button>
+      <button class="btn-primary" id="btn-confirm-data">确认数据 →</button>
+    </div>
+  </div>
+
+  <!-- ═══ Step 3: Packing Config ═══ -->
+  <div class="card hidden" id="step-3">
+    <h3 class="card__title">Step 3: 装箱配置</h3>
+
+    <div class="flex gap-4 items-center mt-2">
+      <label class="text-muted">操作间隙:</label>
+      <input type="number" id="tolerance-input" value="5" min="0" max="20" step="0.5" style="width:80px">
+      <span class="text-muted">cm</span>
+    </div>
+
+    <div class="mt-4">
+      <h4 class="card__subtitle">货物清单 & 叠放设置</h4>
+      <label class="text-muted" style="display:flex;align-items:center;gap:6px;margin:6px 0 2px;font-size:13px;">
+        <input type="checkbox" id="allow-6way-checkbox" checked style="width:16px;height:16px;cursor:pointer;">
+        允许 6 面翻转（可侧放/倒置提高装载率；取消后全部货物仅水平旋转）
+      </label>
+      <div class="table-wrapper">
+        <table class="table" id="sku-table">
+          <thead>
+            <tr>
+              <th>型号</th>
+              <th>长(m)</th><th>宽(m)</th><th>高(m)</th>
+              <th>数量</th><th>单重(kg)</th>
+              <th>可叠放</th><th title="勾选后该货物不会被旋转放置，始终保持原始长宽高方向">不可翻转</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="mt-4" id="container-recommendation"></div>
+    <div class="mt-2" id="alternative-containers"></div>
+
+    <div class="mt-4 flex justify-between items-center">
+      <button class="btn-secondary" onclick="App.goToStep(2)">← 返回确认数据</button>
+      <button class="btn-primary" id="btn-calculate">开始计算</button>
+    </div>
+  </div>
+
+  <!-- ═══ Step 4: Results ═══ -->
+  <div class="card hidden" id="step-4">
+    <h3 class="card__title">Step 4: 装箱结果</h3>
+
+    <div class="result-summary" id="result-summary"></div>
+
+    <div class="mt-4">
+      <div class="container-tabs" id="container-tabs"></div>
+    </div>
+
+    <div class="result-layout mt-4">
+      <div class="viewer-3d" id="three-viewer-container">
+        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#B8A89A;">
+          已加载 3D 视图
+        </div>
+      </div>
+
+      <div class="result-detail-column">
+        <div id="container-detail"></div>
+        <div class="mt-4" id="warnings-panel"></div>
+      </div>
+    </div>
+
+    <div class="mt-4 flex justify-between items-center" style="position:relative;z-index:30;">
+      <button class="btn-secondary" onclick="App.goToStep(3)">← 返回配置</button>
+      <div class="flex gap-2" style="position:relative;z-index:30;">
+        <button class="btn-secondary" onclick="App.resetState()">重新开始</button>
+        <button class="btn-export" id="btn-export-pdf">导出 PDF 报告</button>
+      </div>
+    </div>
+  </div>
+
+  </main>
+
+  <aside class="context-rail" aria-label="上下文摘要">
+    <div class="context-rail__top"><span class="sidebar__eyebrow">LIVE SUMMARY</span><span class="context-rail__signal"></span></div>
+    <section class="context-panel" data-context-step="1">
+      <h2>导入概览</h2><p class="context-panel__hint">开始导入后，这里会显示数据质量。</p>
+      <div class="context-empty">等待货物数据</div>
+    </section>
+    <section class="context-panel" data-context-step="2">
+      <h2>数据质量</h2><p class="context-panel__hint">确认前快速检查导入结果。</p>
+      <div class="metric-grid"><div><strong id="context-item-count">--</strong><span>货物件数</span></div><div><strong id="context-volume">--</strong><span>总体积</span></div><div><strong id="context-weight">--</strong><span>总重量</span></div><div><strong id="context-completeness">--</strong><span>完整度</span></div></div>
+      <div class="context-note">字段异常会在这里提示</div>
+    </section>
+    <section class="context-panel" data-context-step="3">
+      <h2>方案预览</h2><p class="context-panel__hint">推荐箱型与利用率会在计算前更新。</p>
+      <div class="context-callout"><span class="context-callout__label">主推荐箱型</span><strong>等待配置</strong></div>
+      <div class="metric-grid metric-grid--two"><div><strong>--</strong><span>预计箱数</span></div><div><strong>--</strong><span>空间利用率</span></div></div>
+      <div class="context-note">载重余量将在方案生成后显示</div>
+    </section>
+    <section class="context-panel" data-context-step="4">
+      <h2>结果摘要</h2><p class="context-panel__hint">方案生成后，在这里快速核对风险。</p>
+      <div class="metric-grid metric-grid--two"><div><strong id="context-utilization">--</strong><span>装载率</span></div><div><strong id="context-unloaded">--</strong><span>未装货物</span></div></div>
+      <div class="risk-line"><span class="risk-line__dot"></span><span>承重与尺寸风险待检查</span></div>
+      <button class="btn-ghost context-export" type="button" onclick="document.getElementById('btn-export-pdf')?.click()">导出报告 <span aria-hidden="true">↗</span></button>
+    </section>
+  </aside>
+
+</div><!-- /.workspace -->
+
+<footer class="site-footer">
+  <p>The Robotary by MESA LLC. · 智能装箱模拟系统 · <span class="site-footer__version" id="app-version-footer" title="当前安装版本">v—</span></p>
+</footer>
+
+<!-- Hidden printable report -->
+<div id="pdf-report" class="hidden" style="position:absolute;left:-9999px;top:0;width:794px;background:#fff;color:#3C3A36;padding:40px;font-family:'Work Sans','PingFang SC','Microsoft YaHei',sans-serif;box-sizing:border-box;"></div>
+
+<!-- ═══ Scripts ═══ -->
+<!-- Non-module libraries -->
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/html2canvas.min.js"></script>
+<script src="vendor/jspdf.umd.min.js"></script>
+
+<!-- Three.js via import map (ES modules) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js",
+    "three/addons/": "./vendor/"
+  }
+}
+</script>
+
+<!-- Application modules (global scripts, load order matters) -->
+<script src="version.js"></script>
+<script src="container-db.js"></script>
+<script src="field-parser.js"></script>
+<script src="planner.js"></script>
+<script src="packing-engine.js"></script>
+<script type="module" src="three-viewer.js"></script>
+<script>
+  // Three.js 模块加载失败 fallback（ES module 错误不冒泡到 onerror）
+  window.addEventListener('error', function(e) {
+    if (e.message && e.message.includes('Failed to fetch') && e.filename && e.filename.includes('three')) {
+      console.error('[3D] Three.js module load failed:', e.message);
+      var container = document.getElementById('three-viewer-container');
+      if (container) {
+        container.innerHTML = '<div style="color:#C97B7B;padding:40px;text-align:center;font-family:Work Sans,sans-serif">3D 模块加载失败，请刷新页面重试</div>';
+      }
+    }
+  }, true);
+  // 超时检测：5s 后 ThreeViewer 仍未定义
+  setTimeout(function() {
+    if (typeof window.ThreeViewer === 'undefined') {
+      console.warn('[3D] ThreeViewer module not loaded after 5s timeout');
+    }
+  }, 5000);
+</script>
+<script src="pdf-exporter.js"></script>
+<script src="tauri-plugin-bridge.js"></script>
+<script src="app.js"></script>
+<script>
+  // 版本号显示（来源：package.json → version.js，构建时自动生成）
+  (function () {
+    var v = window.APP_VERSION || 'dev';
+    ['app-version', 'app-version-footer'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = 'v' + v;
+    });
+  })();
+</script>
+
+</body>
+</html>
