@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 
+
 // ═══════════════════════════════════════════
 // 常量
 // ═══════════════════════════════════════════
@@ -21,6 +22,21 @@ const CONTAINER_COLORS = {
   openTop: 0x7B9E8F,
   flatRack: 0x8B7D6B
 };
+
+// ═══════════════════════════════════════════
+// 调试日志门控（2026-11-18）
+// release 正常启动控制台零 [3D Diag]：只有 `CLS_DEBUG=1` 启动时（Rust setup 注入
+// window.__CLS_DEBUG__）或浏览器里手动带 ?diag=1 才输出。读者是我，不是用户。
+function diagOn() {
+  try {
+    if (typeof window !== 'undefined' && window.__CLS_DEBUG__ === true) return true;
+    if (typeof location !== 'undefined' && /[?&]diag=1/.test(location.search)) return true;
+  } catch (e) { /* 忽略：判定失败按关处理 */ }
+  return false;
+}
+const dlog = (...a) => { if (diagOn()) console.log(...a); };
+const dwarn = (...a) => { if (diagOn()) console.warn(...a); };
+const derr = (...a) => { if (diagOn()) console.error(...a); };
 
 const SCALE = 1;
 const SPRITE_LABEL_THRESHOLD = 50; // 超过此数量只给特殊件打标签
@@ -442,7 +458,7 @@ function createLabelSprite(text, bgColor = 'rgba(255,255,255,0.85)', textColor =
 // ═══════════════════════════════════════════
 
 function renderCargo(group, placedItems, containerSpec, containerIndex = 0) {
-  console.log(`[3D Diag] renderCargo 入口: 箱${containerIndex + 1}, placedItems.length=${placedItems.length}`);
+  dlog(`[3D Diag] renderCargo 入口: 箱${containerIndex + 1}, placedItems.length=${placedItems.length}`);
 
   const modelColors = {};
   let colorIdx = 0;
@@ -457,7 +473,7 @@ function renderCargo(group, placedItems, containerSpec, containerIndex = 0) {
     try {
       // 数据完整性校验
       if (!item || typeof item !== 'object') {
-        console.warn(`[3D Diag] ⚠️ 箱${containerIndex + 1} item[${idx}] 无效:`, item);
+        dwarn(`[3D Diag] ⚠️ 箱${containerIndex + 1} item[${idx}] 无效:`, item);
         skippedCount++;
         continue;
       }
@@ -469,14 +485,14 @@ function renderCargo(group, placedItems, containerSpec, containerIndex = 0) {
 
       // 数值有效性检查
       if (![l, w, h, x, y, z].every(v => Number.isFinite(v))) {
-        console.warn(`[3D Diag] ⚠️ 箱${containerIndex + 1} item[${idx}] (${model}) 含无效坐标: l=${l}, w=${w}, h=${h}, x=${x}, y=${y}, z=${z}`);
+        dwarn(`[3D Diag] ⚠️ 箱${containerIndex + 1} item[${idx}] (${model}) 含无效坐标: l=${l}, w=${w}, h=${h}, x=${x}, y=${y}, z=${z}`);
         skippedCount++;
         continue;
       }
 
       // 尺寸合理性检查（单件货物超过 100m 视为异常数据）
       if (l > 100 || w > 100 || h > 100) {
-        console.error(`[3D Diag] ❌ 箱${containerIndex + 1} item[${idx}] (${model}) 尺寸异常: ${l}×${w}×${h}`);
+        derr(`[3D Diag] ❌ 箱${containerIndex + 1} item[${idx}] (${model}) 尺寸异常: ${l}×${w}×${h}`);
         skippedCount++;
         continue;
       }
@@ -500,7 +516,7 @@ function renderCargo(group, placedItems, containerSpec, containerIndex = 0) {
         : { maxL: containerSpec.L, maxW: containerSpec.W, maxH: containerSpec.H };
       const invalidGeometry = containerSpec.type !== 'flatRack' && (l > effDims.maxL + 1e-6 || w > effDims.maxW + 1e-6 || h > effDims.maxH + 1e-6);
       if (invalidGeometry) {
-        console.error(`[3D Diag] ❌ 箱${containerIndex + 1} (${containerSpec.code}) 货物 ${model} 超出箱体有效尺寸，拒绝伪造放大渲染`);
+        derr(`[3D Diag] ❌ 箱${containerIndex + 1} (${containerSpec.code}) 货物 ${model} 超出箱体有效尺寸，拒绝伪造放大渲染`);
         skippedCount++;
         continue;
       }
@@ -584,12 +600,12 @@ function renderCargo(group, placedItems, containerSpec, containerIndex = 0) {
       renderedCount++;
 
     } catch (itemErr) {
-      console.error(`[3D Diag] ❌ 箱${containerIndex + 1} item[${idx}] (${item?.model}) 渲染异常:`, itemErr);
+      derr(`[3D Diag] ❌ 箱${containerIndex + 1} item[${idx}] (${item?.model}) 渲染异常:`, itemErr);
       skippedCount++;
     }
   }
 
-  console.log(`[3D Diag] renderCargo 完成: 箱${containerIndex + 1}, 总数=${totalCount}, 渲染=${renderedCount}, 跳过=${skippedCount}`);
+  dlog(`[3D Diag] renderCargo 完成: 箱${containerIndex + 1}, 总数=${totalCount}, 渲染=${renderedCount}, 跳过=${skippedCount}`);
 }
 
 // ═══════════════════════════════════════════
@@ -606,7 +622,7 @@ function setupCameraRenderer(scene, canvasId, containerSpec) {
   // 改为读取容器（parentEl）尺寸，canvas 与容器严格贴合。
   const width = canvas.clientWidth || (parentEl ? parentEl.clientWidth : 0) || 800;
   const height = canvas.clientHeight || (parentEl ? parentEl.clientHeight : 0) || 600;
-  console.log(`[3D Diag] setupCameraRenderer ${canvasId}: canvas.client=${canvas.clientWidth}x${canvas.clientHeight}, parentEl=${parentEl ? parentEl.clientWidth + 'x' + parentEl.clientHeight : 'null'}, → ${width}x${height}`);
+  dlog(`[3D Diag] setupCameraRenderer ${canvasId}: canvas.client=${canvas.clientWidth}x${canvas.clientHeight}, parentEl=${parentEl ? parentEl.clientWidth + 'x' + parentEl.clientHeight : 'null'}, → ${width}x${height}`);
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   // 修复：updateStyle=false —— 不覆盖 canvas 的 CSS 尺寸（width:100%;height:100%）。
@@ -1077,23 +1093,27 @@ function buildVisualization(result, parentId) {
     return;
   }
 
-  // ═══ 诊断日志：输入数据快照 ═══
-  console.log('[3D Diag] === buildVisualization 入口 ===');
-  console.log('[3D Diag] containers.length:', result.containers.length);
-  console.log('[3D Diag] containerCount (result):', result.containerCount);
-  console.log('[3D Diag] totalPlaced (result):', result.totalPlaced);
+  // ═══ 诊断快照（2026-11-18：仅 `window.__CLS_DEBUG__ === true` 时打）═══
+  //   原先无条件 console.log，release 也刷屏，控制台全是内部字段。
+  //   判据：正常启动控制台不出现 '[3D Diag]'；排障时手动 `window.__CLS_DEBUG__ = true` 再重绘。
+  // （门控已下沉到 dlog/dwarn/derr，见文件头）
+  dlog('[3D Diag] === buildVisualization 入口 ===');
+  dlog('[3D Diag] containers.length:', result.containers.length);
+  dlog('[3D Diag] containerCount (result):', result.containerCount);
+  dlog('[3D Diag] totalPlaced (result):', result.totalPlaced);
   let totalPlacedInContainers = 0;
   for (let ci = 0; ci < result.containers.length; ci++) {
     const cc = result.containers[ci];
     const itemCount = cc.placedItems ? cc.placedItems.length : 0;
     totalPlacedInContainers += itemCount;
-    console.log(`[3D Dig]   箱${ci + 1}: code=${cc.containerCode}, items=${itemCount}, utilization=${cc.utilization}, weight=${cc.totalWeight}`);
-  }
-  console.log('[3D Diag] containers 内 placedItems 总数:', totalPlacedInContainers);
+    dlog(`[3D Dig]   箱${ci + 1}: code=${cc.containerCode}, items=${itemCount}, utilization=${cc.utilization}, weight=${cc.totalWeight}`);
+  // ---
+  dlog('[3D Diag] containers 内 placedItems 总数:', totalPlacedInContainers);
   if (totalPlacedInContainers !== result.totalPlaced) {
-    console.error(`[3D Diag] ⚠️ 数据不一致！result.totalPlaced=${result.totalPlaced} 但 containers 内实际 ${totalPlacedInContainers} 件`);
+    derr(`[3D Diag] ⚠️ 数据不一致！result.totalPlaced=${result.totalPlaced} 但 containers 内实际 ${totalPlacedInContainers} 件`);
   }
-  // ═══ 诊断日志结束 ═══
+  }
+  // ═══ 诊断快照结束 ═══
 
   disposeAll();
   disposed = false;
@@ -1132,18 +1152,18 @@ function buildVisualization(result, parentId) {
         const allKeys = Object.keys(window.ContainerDB.CONTAINER_DB);
         const fuzzyKey = allKeys.find(k => k.toLowerCase() === lowerCode);
         if (fuzzyKey) {
-          console.warn(`[3D Diag] 🔧 箱${i + 1}: "${rawCode}" 模糊匹配到 "${fuzzyKey}"`);
+          dwarn(`[3D Diag] 🔧 箱${i + 1}: "${rawCode}" 模糊匹配到 "${fuzzyKey}"`);
           containerSpec = window.ContainerDB.CONTAINER_DB[fuzzyKey];
           c.containerCode = fuzzyKey;
         }
       }
     }
     if (!containerSpec) {
-      console.error(`[3D Diag] ❌ 箱${i + 1}: containerCode="${c.containerCode}" 在 CONTAINER_DB 中未找到。可用 keys:`,
+      derr(`[3D Diag] ❌ 箱${i + 1}: containerCode="${c.containerCode}" 在 CONTAINER_DB 中未找到。可用 keys:`,
         Object.keys(window.ContainerDB?.CONTAINER_DB || {}));
       // 不跳过！使用默认规格渲染，确保3D场景不丢失
       containerSpec = { L: 12, W: 2.4, H: 2.6, code: c.containerCode || 'UNKNOWN', nameCN: '未知箱型', type: 'standard', payload: 28000 };
-      console.warn(`[3D Diag] 🔧 箱${i + 1}: 使用默认规格 ${containerSpec.L}×${containerSpec.W}×${containerSpec.H}`);
+      dwarn(`[3D Diag] 🔧 箱${i + 1}: 使用默认规格 ${containerSpec.L}×${containerSpec.W}×${containerSpec.H}`);
     }
 
     const wrapper = document.createElement('div');
@@ -1177,7 +1197,7 @@ function buildVisualization(result, parentId) {
     if (containerGroup) {
       renderCargo(containerGroup, c.placedItems || [], containerSpec, i);
     } else {
-      console.error(`[3D Diag] ❌ 箱${i + 1}: containerGroup 未创建！`);
+      derr(`[3D Diag] ❌ 箱${i + 1}: containerGroup 未创建！`);
     }
 
     // V-01 修复：懒创建 —— 此处只记录规格，renderer 仅对当前可见容器创建（见 showContainer）

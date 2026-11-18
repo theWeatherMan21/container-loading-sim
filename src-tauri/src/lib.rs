@@ -53,6 +53,21 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .setup(|app| {
+            // ★ 2026-11-18：3D 调试日志门控。只有 `CLS_DEBUG=1` 启动才给前端打开开关；
+            //   正常启动 `window.__CLS_DEBUG__` 不存在，控制台零 `[3D Diag]`（爹地 11-18 红线）。
+            //   延迟 600ms：setup 阶段 WebView 尚未执行前端脚本，立即 eval 会随导航丢失。
+            if std::env::var("CLS_DEBUG").map(|v| v == "1").unwrap_or(false) {
+                if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
+                    let w2 = w.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(600));
+                        let _ = w2.eval("window.__CLS_DEBUG__=true");
+                    });
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             pick_excel_file_read,
             save_pdf_file

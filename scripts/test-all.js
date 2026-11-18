@@ -26,7 +26,8 @@ const assertSuites = [
   'test-regressions-c1.js',            // C1 轮回归固化（2026-10-13 双轨审阅修复：表头/去重/熔断/tolerance/重货推荐/FR 解除尺寸限制）
   'test-regressions-c2.js',            // C2 轮回归固化（2026-10-15 爹地拍板：官方载重/FR 长度限定（分层+平放+超限警告）/6 面翻转勾选/Worker/性能）
   'test-regressions-c3.js',            // C3 轮回归固化（2026-10-15 复审遗留：P1-6 漏装重试 pass / P1-8 分类一致性 / P2-5 文案 / P2-4 自检口径）
-  'test-regressions-c4.js'             // C4 轮回归固化（2026-10-21 爹地分档：45HQ vs 40FR 长度/重量/悬挑矩阵）
+  'test-regressions-c4.js',            // C4 轮回归固化（2026-10-21 爹地分档：45HQ vs 40FR 长度/重量/悬挑矩阵）
+  'test-diag-gate.js'                  // 2026-11-18 爹地红线：3D 调试日志必须 env 门控，release 控制台零输出
 ];
 
 // 报告类套件：输出量大，仅检查退出码
