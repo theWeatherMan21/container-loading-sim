@@ -51,3 +51,7 @@ docs/superpowers/plans/
 .playwright-cli/
 acceptance-r4-dist/
 python-legacy/
+
+# 真实业务数据不入库（爹地 2026-11-25 定）；合成夹具由 scripts/create-test-*.js 重新生成
+test-packing-list*.xlsx
+*.xlsx

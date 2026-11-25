@@ -1,7 +1,7 @@
 // probe12.js — 交叉验证平行审阅(AUDIT-2026-10-13)的两条关键结论
 const path = require('path');
 const fs = require('fs');
-const REPO = '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim';
+const REPO = '/Users/russospencer/dev/ContainerLoadingSim';
 const { createRuntime } = require(path.join(REPO, 'scripts/_load-runtime.js'));
 const XLSX = require(path.join(REPO, 'node_modules/xlsx'));
 const ctx = createRuntime(['container-db.js', 'field-parser.js', 'planner.js', 'packing-engine.js']);

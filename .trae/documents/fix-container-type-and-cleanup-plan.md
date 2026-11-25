@@ -129,7 +129,7 @@ return zScore * CONSTANTS.DBL_Z_WEIGHT + xScore * CONSTANTS.DBL_X_WEIGHT + yScor
 
 1. **单元测试脚本全绿：**
    ```bash
-   cd /Users/russospencer/Documents/trae_projects/ContainerLoadingSim
+   cd /Users/russospencer/dev/ContainerLoadingSim
    node dogfood-output/run-core-tests.js
    ```
    预期：0 critical / 0 high issue，所有既有测试通过，新增 OT/FR 测试通过。

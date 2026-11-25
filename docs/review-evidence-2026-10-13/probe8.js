@@ -1,6 +1,6 @@
 // probe8.js — OOM 阶段定位 + 0 重量影响
 const path = require('path');
-const REPO = '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim';
+const REPO = '/Users/russospencer/dev/ContainerLoadingSim';
 const { createRuntime } = require(path.join(REPO, 'scripts/_load-runtime.js'));
 const ctx = createRuntime(['container-db.js', 'planner.js', 'packing-engine.js']);
 const CDB = ctx.window.ContainerDB;

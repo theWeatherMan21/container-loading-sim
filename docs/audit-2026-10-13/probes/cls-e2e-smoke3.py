@@ -1,10 +1,11 @@
+# 夹具：真实单不入库，取自本地 ~/.hermes/private/cls-fixtures/（爹地 2026-11-25 定）
 # 装箱模拟系统 · E2E 复验（2026-10-13 修复后）
 import json
 from playwright.sync_api import sync_playwright
 
 BASE = 'http://127.0.0.1:8377/index.html'
 SCRATCH = '/Users/russospencer/.hermes/cache/scratch'
-PROJ = '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim'
+PROJ = '/Users/russospencer/dev/ContainerLoadingSim'
 EXE = '/Users/russospencer/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'
 
 def state_of(pg):
@@ -43,7 +44,7 @@ with sync_playwright() as p:
 
     # ═══ 场景 A3：真实测试单 · 推荐失败 → 启用混合 → 选箱型 → 计算（原死锁路径）═══
     print('========== 场景 A3: 真实单 · 死锁修复验证 ==========')
-    upload_and_recommend(pg, f'{PROJ}/test-packing-list.xlsx')
+    upload_and_recommend(pg, f'/Users/russospencer/.hermes/private/cls-fixtures/test-packing-list.xlsx')
     rec = pg.inner_text('#container-recommendation')
     print('  [推荐区]', rec.replace('\n', ' | ')[:200])
     print('  [初始 state]', json.dumps(state_of(pg)))

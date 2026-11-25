@@ -1,6 +1,6 @@
 // probe11.js — 1440 件 0.5m 立方：容差对端到端箱数的影响
 const path=require('path');
-const REPO='/Users/russospencer/Documents/trae_projects/ContainerLoadingSim';
+const REPO='/Users/russospencer/dev/ContainerLoadingSim';
 const {createRuntime}=require(path.join(REPO,'scripts/_load-runtime.js'));
 const ctx=createRuntime(['container-db.js','planner.js','packing-engine.js']);
 const PE=ctx.window.PackingEngine;

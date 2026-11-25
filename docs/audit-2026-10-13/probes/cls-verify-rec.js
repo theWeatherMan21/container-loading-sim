@@ -1,5 +1,5 @@
 // 30t 推荐链修复验证
-const { createRuntime } = require('/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/scripts/_load-runtime.js');
+const { createRuntime } = require('/Users/russospencer/dev/ContainerLoadingSim/scripts/_load-runtime.js');
 const ctx = createRuntime(['container-db.js', 'planner.js', 'packing-engine.js']);
 const CDB = ctx.window.ContainerDB;
 const PE = ctx.window.PackingEngine;

@@ -1,7 +1,7 @@
 // 装箱模拟系统 · 审阅探针（2026-10-13）
 // 目的：用真实引擎验证审查中发现的疑点
 const path = require('path');
-const { createRuntime } = require('/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/scripts/_load-runtime.js');
+const { createRuntime } = require('/Users/russospencer/dev/ContainerLoadingSim/scripts/_load-runtime.js');
 const ctx = createRuntime(['container-db.js', 'planner.js', 'packing-engine.js']);
 const CDB = ctx.window.ContainerDB;
 const PE = ctx.window.PackingEngine;

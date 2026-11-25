@@ -2,12 +2,12 @@
 // 3a. cleanMergedRows 相邻全等行去重是否误删真实数据行
 // 3b. 无重量列时的实际行为（weight=0?）
 const fs = require('fs'), vm = require('vm');
-const { createRuntime } = require('/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/scripts/_load-runtime.js');
-const XLSX = require('/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/node_modules/xlsx');
+const { createRuntime } = require('/Users/russospencer/dev/ContainerLoadingSim/scripts/_load-runtime.js');
+const XLSX = require('/Users/russospencer/dev/ContainerLoadingSim/node_modules/xlsx');
 
 const ctx = createRuntime([]);
 ctx.XLSX = XLSX;
-vm.runInContext(fs.readFileSync('/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/field-parser.js', 'utf8'), ctx, { filename: 'field-parser.js' });
+vm.runInContext(fs.readFileSync('/Users/russospencer/dev/ContainerLoadingSim/field-parser.js', 'utf8'), ctx, { filename: 'field-parser.js' });
 const FP = ctx.FieldParser;
 
 function makeXlsx(aoa) {

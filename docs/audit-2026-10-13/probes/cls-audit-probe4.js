@@ -1,5 +1,5 @@
 // 审阅探针批次4：混合装箱完整链路（模拟 UI 路径）
-const { createRuntime } = require('/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/scripts/_load-runtime.js');
+const { createRuntime } = require('/Users/russospencer/dev/ContainerLoadingSim/scripts/_load-runtime.js');
 const ctx = createRuntime(['container-db.js', 'planner.js', 'packing-engine.js']);
 const CDB = ctx.window.ContainerDB;
 const PE = ctx.window.PackingEngine;

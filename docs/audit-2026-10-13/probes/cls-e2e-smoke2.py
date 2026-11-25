@@ -1,10 +1,11 @@
+# 夹具：真实单不入库，取自本地 ~/.hermes/private/cls-fixtures/（爹地 2026-11-25 定）
 # 装箱模拟系统 · E2E 冒烟 第二版（精确版）
 import json
 from playwright.sync_api import sync_playwright
 
 BASE = 'http://127.0.0.1:8377/index.html'
 SCRATCH = '/Users/russospencer/.hermes/cache/scratch'
-PROJ = '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim'
+PROJ = '/Users/russospencer/dev/ContainerLoadingSim'
 EXE = '/Users/russospencer/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'
 
 def state_of(pg):
@@ -25,7 +26,7 @@ with sync_playwright() as p:
     print('========== 场景 A2: 真实测试单 · 混合启用死锁验证 ==========')
     pg.goto(BASE)
     pg.wait_for_function("() => !!window.App", timeout=20000)
-    pg.set_input_files('#fileInput', f'{PROJ}/test-packing-list.xlsx')
+    pg.set_input_files('#fileInput', f'/Users/russospencer/.hermes/private/cls-fixtures/test-packing-list.xlsx')
     pg.wait_for_selector('#step-2:not(.hidden)', timeout=20000)
     pg.click('#btn-confirm-data')
     pg.wait_for_selector('#step-3:not(.hidden)', timeout=20000)

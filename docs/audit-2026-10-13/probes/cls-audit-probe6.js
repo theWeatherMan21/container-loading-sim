@@ -1,14 +1,15 @@
+// 夹具：真实单不入库，取自本地 ~/.hermes/private/cls-fixtures/（爹地 2026-11-25 定）
 // 审阅探针批次6：正确解析下的推荐预期（修复演示）
 // 从 test-packing-list.xlsx 按"正确列映射"构造 items，跑 autoRecommend
 const fs = require('fs');
-const { createRuntime } = require('/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/scripts/_load-runtime.js');
-const XLSX = require('/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/node_modules/xlsx');
+const { createRuntime } = require('/Users/russospencer/dev/ContainerLoadingSim/scripts/_load-runtime.js');
+const XLSX = require('/Users/russospencer/dev/ContainerLoadingSim/node_modules/xlsx');
 const ctx = createRuntime(['container-db.js', 'planner.js', 'packing-engine.js']);
 const CDB = ctx.window.ContainerDB;
 const PE = ctx.window.PackingEngine;
 
 // dump 全部行先看看
-const wb = XLSX.readFile('/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/test-packing-list.xlsx');
+const wb = XLSX.readFile('/Users/russospencer/.hermes/private/cls-fixtures/test-packing-list.xlsx');
 const ws = wb.Sheets[wb.SheetNames[0]];
 const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
 console.log('=== 全部 15 行 ===');

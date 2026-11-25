@@ -1,7 +1,7 @@
 // probe10.js — PDF 报告 HTML 生成（纯函数）+ 载重展示字段核查
 const path = require('path');
 const fs = require('fs');
-const REPO = '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim';
+const REPO = '/Users/russospencer/dev/ContainerLoadingSim';
 const { createRuntime } = require(path.join(REPO, 'scripts/_load-runtime.js'));
 const ctx = createRuntime(['container-db.js', 'planner.js', 'packing-engine.js', 'pdf-exporter.js']);
 const CDB = ctx.window.ContainerDB, PE = ctx.window.PackingEngine, PX = ctx.window.PdfExporter;

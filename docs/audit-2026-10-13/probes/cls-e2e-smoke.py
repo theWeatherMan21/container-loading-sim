@@ -1,10 +1,11 @@
+# 夹具：真实单不入库，取自本地 ~/.hermes/private/cls-fixtures/（爹地 2026-11-25 定）
 # 装箱模拟系统 · E2E 冒烟（headless）——审阅 2026-10-13
 import json
 from playwright.sync_api import sync_playwright
 
 BASE = 'http://127.0.0.1:8377/index.html'
 SCRATCH = '/Users/russospencer/.hermes/cache/scratch'
-PROJ = '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim'
+PROJ = '/Users/russospencer/dev/ContainerLoadingSim'
 
 def run_scene(pg, xlsx_path, tag, scene_name):
     logs = []
@@ -71,7 +72,7 @@ def run_scene(pg, xlsx_path, tag, scene_name):
 with sync_playwright() as p:
     b = p.chromium.launch(headless=True, executable_path='/Users/russospencer/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing')
     pg = b.new_page(viewport={'width': 1440, 'height': 1100})
-    run_scene(pg, f'{PROJ}/test-packing-list.xlsx', 'A', '真实测试单 test-packing-list.xlsx')
+    run_scene(pg, f'/Users/russospencer/.hermes/private/cls-fixtures/test-packing-list.xlsx', 'A', '真实测试单 test-packing-list.xlsx')
     run_scene(pg, f'{SCRATCH}/m30-heavy.xlsx', 'C', '重货 30t 单件 m30-heavy.xlsx')
     b.close()
 print('\nE2E 冒烟完成')

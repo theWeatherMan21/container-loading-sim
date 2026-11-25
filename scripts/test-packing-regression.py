@@ -9,8 +9,10 @@ from playwright.sync_api import sync_playwright
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_URL = "http://localhost:8080"
-TEST_FILE = os.path.join(PROJECT, "test-packing-list.xlsx")
-TEST_FILE_BULK = os.path.join(PROJECT, "test-packing-list-bulk.xlsx")
+# 真实单不入库（爹地 2026-11-25 定）：夹具走本地私有目录
+FIXTURE_DIR = os.path.expanduser("~/.hermes/private/cls-fixtures")
+TEST_FILE = os.path.join(FIXTURE_DIR, "test-packing-list.xlsx")
+TEST_FILE_BULK = os.path.join(FIXTURE_DIR, "test-packing-list-bulk.xlsx")
 SCREENSHOT_DIR = os.path.join(PROJECT, "test-screenshots")
 
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)

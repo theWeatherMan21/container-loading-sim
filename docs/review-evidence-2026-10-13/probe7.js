@@ -1,7 +1,8 @@
+// 夹具：真实单不入库，取自本地 ~/.hermes/private/cls-fixtures/（爹地 2026-11-25 定）
 // probe7.js — 真实装箱单端到端（解析 mm → 推荐 → 计算 → 不变量校验）
 const path = require('path');
 const fs = require('fs');
-const REPO = '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim';
+const REPO = '/Users/russospencer/dev/ContainerLoadingSim';
 const { createRuntime } = require(path.join(REPO, 'scripts/_load-runtime.js'));
 const L = require('./probe-lib.js');
 
@@ -14,7 +15,7 @@ const PE = ctx.window.PackingEngine;
 const out = [];
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); out.push(s); console.log(s); };
 
-const file = process.argv[2] || path.join(REPO, 'test-packing-list.xlsx');
+const file = process.argv[2] || '/Users/russospencer/.hermes/private/cls-fixtures/test-packing-list.xlsx';
 log(`文件：${file}`);
 const buf = fs.readFileSync(file);
 const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);

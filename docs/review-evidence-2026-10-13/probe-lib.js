@@ -2,7 +2,7 @@
 // 目标：在真实执行的引擎上验证「约束是否被违反」，逐条打印实测证据。
 // 用法：node probe-invariants.js
 const path = require('path');
-const REPO = process.env.REPO || '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim';
+const REPO = process.env.REPO || '/Users/russospencer/dev/ContainerLoadingSim';
 const { createRuntime } = require(path.join(REPO, 'scripts/_load-runtime.js'));
 
 const ctx = createRuntime(['container-db.js', 'planner.js', 'packing-engine.js']);

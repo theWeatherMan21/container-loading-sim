@@ -18,7 +18,7 @@
 
 ### 2.1 输入文件
 
-- **文件路径**：`/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/土耳其货物明细(1).xlsx`
+- **文件路径**：`/Users/russospencer/dev/ContainerLoadingSim/土耳其货物明细(1).xlsx`
 - **文件类型**：`.xlsx`（Excel 2007+）
 - **预期内容**：土耳其货物装箱明细，包含型号、尺寸、数量、重量等字段
 

@@ -2,10 +2,10 @@ from playwright.sync_api import sync_playwright
 import os
 import sys
 
-OUTPUT_DIR = '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/dogfood-output/e2e'
+OUTPUT_DIR = '/Users/russospencer/dev/ContainerLoadingSim/dogfood-output/e2e'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-TEST_FILE = '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim/dogfood-output/test_data.csv'
+TEST_FILE = '/Users/russospencer/dev/ContainerLoadingSim/dogfood-output/test_data.csv'
 URL = 'http://localhost:8080/trae_projects/ContainerLoadingSim/index.html'
 
 console_errors = []
