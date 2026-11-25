@@ -25,6 +25,7 @@
 | 交付物位置 | `/Applications/Selfmade/智能装箱模拟系统.app`（**他会点开的那一个**，Info.plist **1.2.6**） |
 | 版本号来源 | `package.json` → 构建时生成 `version.js` → 页眉徽标 + 页脚（单一来源，不再手改） |
 | 旧版备份 | `~/.hermes/backups/智能装箱模拟系统-1.2.5-20261125-1559/`（最新全量）/ 同目录 `.bak-1.2.1-20260827` / `.bak-1.2.3-20261021` / `.bak-1.2.4-20261021` |
+| 自检 | 已接 selfcheck（2026-11-25）：spec `~/.hermes/selfcheck/specs/ContainerLoadingSim.json`，日志 `~/Library/Logs/ContainerLoadingSim/app.log`（`[boot]`/`[op]`，超 5MB 滚动）；探针 `app_version` 带 `expect_from` 与 `package.json` 版本比对，**版本漂移会真 FAIL**（已反向验证：期望 1.2.5 vs 装机 1.2.6 → WAKE 报「版本对不上」）。无窗取证：`CLS_BOOT_LOG_ONLY=1 <二进制>` |
 | 技术栈 | Tauri v2 + 原生 HTML/CSS/JS + Three.js；Rust 侧只做文件对话框/读写 |
 | 箱型 | 20GP · 40HQ · 45HQ · 20OT · 40OT · 20FR · 40FR（7 种；45HQ 2026-10-21 起参与推荐） |
 | 引擎 | EMS 空间分割 + 同型号≥10 件批量层铺，双策略混合；8 项自检闭环（重叠/超界/利用率/重量/门/FR地板/支撑率/四角） |
