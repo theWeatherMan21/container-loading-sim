@@ -11,17 +11,18 @@
 
 ## 现状三态
 
-**已交付待验收**：**v1.2.5（版本号可见）** 已装进 `/Applications/Selfmade/智能装箱模拟系统.app`（2026-10-23 10:33；
-旧 1.2.4 备份为同目录 `.bak-1.2.4-20261021`）。**页眉右上角与页脚现在直接显示 v1.2.5**，不用再猜装的是哪版。
+**已交付待验收**：**v1.2.6（版本号可见）** 已装进 `/Applications/Selfmade/智能装箱模拟系统.app`（2026-11-25 15:59，
+内容含 11-18 红线修复：3D 控制台日志全 env 门控 + test-reports 清理；旧 1.2.5 全量备份在
+`~/.hermes/backups/智能装箱模拟系统-1.2.5-20261125-1559/`）。**页眉右上角与页脚直接显示 v1.2.6**，不用再猜装的是哪版。
 
 ## 关键事实
 
 | 项 | 值 |
 |---|---|
-| 仓库 | `~/Documents/trae_projects/ContainerLoadingSim`（git，HEAD `8a8602f`） |
-| 交付物位置 | `/Applications/Selfmade/智能装箱模拟系统.app`（**他会点开的那一个**，Info.plist 1.2.5） |
+| 仓库 | `~/dev/ContainerLoadingSim`（git，HEAD `19c172e`）· ⚠️ `~/Documents/trae_projects/ContainerLoadingSim` 是死副本，mtime 停在 11 月初，勿动 |
+| 交付物位置 | `/Applications/Selfmade/智能装箱模拟系统.app`（**他会点开的那一个**，Info.plist **1.2.6**） |
 | 版本号来源 | `package.json` → 构建时生成 `version.js` → 页眉徽标 + 页脚（单一来源，不再手改） |
-| 旧版备份 | `.bak-1.2.1-20260827` / `.bak-1.2.3-20261021` / `.bak-1.2.4-20261021`（三级可回滚） |
+| 旧版备份 | `~/.hermes/backups/智能装箱模拟系统-1.2.5-20261125-1559/`（最新全量）/ 同目录 `.bak-1.2.1-20260827` / `.bak-1.2.3-20261021` / `.bak-1.2.4-20261021` |
 | 技术栈 | Tauri v2 + 原生 HTML/CSS/JS + Three.js；Rust 侧只做文件对话框/读写 |
 | 箱型 | 20GP · 40HQ · 45HQ · 20OT · 40OT · 20FR · 40FR（7 种；45HQ 2026-10-21 起参与推荐） |
 | 引擎 | EMS 空间分割 + 同型号≥10 件批量层铺，双策略混合；8 项自检闭环（重叠/超界/利用率/重量/门/FR地板/支撑率/四角） |

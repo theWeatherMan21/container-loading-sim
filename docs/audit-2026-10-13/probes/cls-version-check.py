@@ -2,7 +2,7 @@
 import http.server, socketserver, threading, functools, sys, os
 from playwright.sync_api import sync_playwright
 
-PROJ = '/Users/russospencer/Documents/trae_projects/ContainerLoadingSim'
+PROJ = '/Users/russospencer/dev/ContainerLoadingSim'
 DIST = os.path.join(PROJ, 'dist')
 SCRATCH = '/Users/russospencer/.hermes/cache/scratch'
 PORT = 8391
